@@ -13,6 +13,9 @@
 ;;; enough. LOOP is an iteration construct that happens to have
 ;;; aggregation and selection capabilities.
 
+(ql:quickload :anaphora)
+(use-package :anaphora)
+
 (defmacro while (condition &body body)
   "While `condition` is true, body executes. `condition` is tested at
 the top of each iteration."
@@ -22,10 +25,13 @@ the top of each iteration."
 
 
 (defun select-columns (results columns)
+  ;; NOTE: This reverse will cause a O(n) traversal. Kill it if at all
+  ;; possible.
   (reverse
    (loop for row in results
-      collect                           ;this could be preallocated into a vector.
-      ;; A list of columns to select
+      ;; this could be preallocated into a vector.
+      collect
+      ;; A list of columns to select/transform.
         (if (consp columns)
             (loop for selector in columns
                collect
@@ -39,7 +45,8 @@ the top of each iteration."
                      (assoc selector row)))
                    (t
                     (error "Unable to determine selector"))))
-            ;; a function to map against each selected row
+            ;; assumes that there will be one function to map a row to
+            ;; a result.
             (list
              (funcall columns row))))))
 
@@ -47,29 +54,29 @@ the top of each iteration."
   ;;initial cut: taking the index of the table to group by, along with
   ;;an aggregation function list.  Each aggregation function will be
   ;;executed on the entire group-by table, so it should take a 2d list
-  ;;of lists
+  ;;of lists. Since SELECT returns a 2d list of lists at present and
+  ;;this reads SELECT's output, this should not be a problem.
 
-  (let ((dummy-table (make-hash-table :test #'equalp))
-        (new-results))
+  ;; WARNING: we are grouping by EQUALP. Probably not ideal.
+  (let ((dummy-table (make-hash-table :test #'equalp)))
     (loop for row in results
        do
          (loop for g in group-by
             do
               (let ((row-idx (elt row g)))
-                (if (not (gethash row-idx dummy-table ))
-                    (setf (gethash row-idx dummy-table )
+                (if (not (gethash row-idx dummy-table))
+                    (setf (gethash row-idx dummy-table)
                           (list row))
-                    (push row (gethash row-idx dummy-table ) )))))
+                    (push row (gethash row-idx dummy-table))))))
     (let ((results (alexandria:hash-table-alist dummy-table)))
       (if aggregation-function-list
-
           (loop for group in results
-               collect
+             collect
                (cons (car group)
                      (loop for function in aggregation-function-list
                         collect
                           (funcall function (cdr group)))))
-         results))))
+          results))))
 
 
 
@@ -100,9 +107,6 @@ the top of each iteration."
           (group-by-tool group-by aggregation-functions selected-results)
           selected-results))))
 
-
-(ql:quickload :anaphora)
-(use-package :anaphora)
 (defmacro select-parser (&rest args)
   "SELECT (t | <list of zero-indexed columns>) FROM <data> (WHERE predicate)
 
