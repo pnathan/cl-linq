@@ -13,8 +13,14 @@
 ;;; enough. LOOP is an iteration construct that happens to have
 ;;; aggregation and selection capabilities.
 
-(ql:quickload :anaphora)
-(use-package :anaphora)
+(defpackage :cl-linq
+  (:use
+   :common-lisp
+   :anaphora)
+  (:export
+   #:query
+   #:cl-linq-select))
+(in-package :cl-linq)
 
 (defmacro while (condition &body body)
   "While `condition` is true, body executes. `condition` is tested at
@@ -68,7 +74,9 @@ the top of each iteration."
 
 
 
-(defun select (columns data
+;; peculiar name because it has to get exported. This should help
+;; minimize any namespace clashes.
+(defun cl-linq-select (columns data
                &key
                  (predicate nil)
                  (aggregation-functions nil)
@@ -134,28 +142,28 @@ the top of each iteration."
   "SELECT (t | <list of zero-indexed columns>) FROM <data> (WHERE predicate)
 
 Data is expected to be a 2D loopable list of lists."
-  (unless (eq (second args) 'FROM)
+  (unless (eq (second args) :FROM)
     (error "Expected FROM, got ~a" (second args)))
 
-  (let ((where-pos (position 'WHERE args)))
+  (let ((where-pos (position :WHERE args)))
     (when where-pos
         (1+ where-pos)))
 
 
   (let ((where-form
           (list :predicate
-                (awhen (position 'WHERE args)
+                (awhen (position :WHERE args)
                   (elt args (1+ it)))))
          (group-by-form
           (list :group-by
-                (awhen (position 'GROUP-BY  args)
+                (awhen (position :GROUP-BY  args)
                   (elt args (1+ it)))))
          (aggregation-functions-form
           (list :aggregation-functions
-                (awhen (position 'AGGREGATING-BY  args)
+                (awhen (position :AGGREGATING-BY  args)
                   (elt args (1+ it))))))
 
-    (append `(select ,(first args) ,(third args))
+    (append `(cl-linq-select ,(first args) ,(third args))
             where-form
             group-by-form
             aggregation-functions-form)))
@@ -187,19 +195,19 @@ Data is expected to be a 2D loopable list of lists."
 
 (defmacro query (operation &rest args)
   (ecase operation
-    (min
+    (:min
      `(min-parser ,operation ,@args))
-    (all
+    (:all
      `(all-parser ,(first args) ,(second args)))
-    (contains
+    (:contains
      `(contains-parser ,(first args) ,(second args)))
-    (any
+    (:any
      `(any-parser ,(first args) ,(second args)))
-    (sum
+    (:sum
      `(sum-parser ,(first args) ,(second args)))
-    (reduce
+    (:reduce
      `(reduce ,(second args) ,(first args) ,(third args)))
-    (select
+    (:select
      `(select-parser ,@args))))
 
 
@@ -242,3 +250,12 @@ Data is expected to be a 2D loopable list of lists."
 
 ;; (((ITB001 5) (ITB001 3.4))
 ;;  ((MKB114 2) (MKB114 3.15)))
+
+
+;; (cl-linq:QUERY
+;;  :select t
+;;  :from *subjects*
+;;  :where #'(lambda (row)
+;;          (> (fourth row) 2.0 ))
+;;  :group-by '(0)
+;;  :aggregating-by #'length)
