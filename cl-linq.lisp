@@ -29,32 +29,24 @@ the top of each iteration."
              `(not ,condition))
      ,@body))
 
+(defun selector-to-lambda (selector)
+  "Convert a selector to a function."
+  (typecase selector
+    (function selector)
+    (integer (lambda (row) (elt row selector)))
+    (symbol (lambda (row) (cdr (assoc selector row))))
+    (t (error "Unable to determine selector"))))
 
-(defun select-columns (results columns)
-  ;; NOTE: This reverse will cause a O(n) traversal. Kill it if at all
-  ;; possible.
-  (reverse
-   (loop for row in results
-      ;; this could be preallocated into a vector.
-      collect
-      ;; A list of columns to select/transform.
-        (if (consp columns)
-            (loop for selector in columns
-               collect
-                 (cond
-                   ((functionp selector)
-                    (funcall selector row))
-                   ((integerp selector)
-                    (elt row selector))
-                   ((symbolp selector)
-                    (cdr
-                     (assoc selector row)))
-                   (t
-                    (error "Unable to determine selector"))))
-            ;; assumes that there will be one function to map a row to
-            ;; a result.
-            (list
-             (funcall columns row))))))
+(defun select-columns (data-rows selectors)
+  "Do a selection on a sequence, supports a sequence of
+   sequences using MAP and produces a list of lists."
+  (let ((selectors (if (consp selectors) selectors (list selectors))))
+    (let ((selectors (mapcar #'selector-to-lambda selectors)))
+      (map 'list
+           (lambda (row)
+             (map 'list
+                  (lambda (f)
+                    (funcall f row)) selectors)) data-rows))))
 
 (defun group-by-tool (group-by results)
   ;;initial cut: taking the index of the table to group by
@@ -238,3 +230,27 @@ Data is expected to be a 2D loopable list of lists."
 ;;          (> (fourth row) 2.0 ))
 ;;  :group-by '(0)
 ;;  :aggregating-by #'length)
+
+(defun test-select-columns ()
+  (let ((data
+         '((a b c)
+           (1 2 3)
+           (4 5 6)))
+        (data-assoc
+         '(((:name . "bob") (:age . 20))
+           ((:name . "frank") (:age . 25)))))
+    (assert (equalp
+             '((a c)
+               (1 3)
+               (4 6))
+             (select-columns data '(0 2))))
+    (assert (equalp
+             '((3 (c b a))
+               (3 (3 2 1))
+               (3 (6 5 4)))
+             (select-columns data (list #'length #'reverse))))
+    (assert (equalp
+             '((20 "bob")
+               (25 "frank"))
+             (select-columns data-assoc '(:age :name))))
+    'success))
