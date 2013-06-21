@@ -225,27 +225,3 @@ Data is expected to be a 2D loopable list of lists."
 ;;          (> (fourth row) 2.0 ))
 ;;  :group-by '(0)
 ;;  :aggregating-by #'length)
-
-(defun test-select-columns ()
-  (let ((data
-         '((a b c)
-           (1 2 3)
-           (4 5 6)))
-        (data-assoc
-         '(((:name . "bob") (:age . 20))
-           ((:name . "frank") (:age . 25)))))
-    (assert (equalp
-             '((a c)
-               (1 3)
-               (4 6))
-             (select-columns data '(0 2))))
-    (assert (equalp
-             '((3 (c b a))
-               (3 (3 2 1))
-               (3 (6 5 4)))
-             (select-columns data (list #'length #'reverse))))
-    (assert (equalp
-             '((20 "bob")
-               (25 "frank"))
-             (select-columns data-assoc '(:age :name))))
-    'success))
