@@ -22,13 +22,6 @@
    #:cl-linq-select))
 (in-package :cl-linq)
 
-(defmacro while (condition &body body)
-  "While `condition` is true, body executes. `condition` is tested at
-the top of each iteration."
-  `(do nil ,(list
-             `(not ,condition))
-     ,@body))
-
 (defun selector-to-lambda (selector)
   "Convert a selector to a function."
   (typecase selector
