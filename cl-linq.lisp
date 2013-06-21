@@ -138,35 +138,14 @@ the top of each iteration."
                        aggregation)))
             grouped-results)))))
 
-(defmacro select-parser (&rest args)
+(defmacro select-parser (selectors &key from where group-by aggregating-by)
   "SELECT (t | <list of zero-indexed columns>) FROM <data> (WHERE predicate)
 
 Data is expected to be a 2D loopable list of lists."
-  (unless (eq (second args) :FROM)
-    (error "Expected FROM, got ~a" (second args)))
-
-  (let ((where-pos (position :WHERE args)))
-    (when where-pos
-        (1+ where-pos)))
-
-
-  (let ((where-form
-          (list :predicate
-                (awhen (position :WHERE args)
-                  (elt args (1+ it)))))
-         (group-by-form
-          (list :group-by
-                (awhen (position :GROUP-BY  args)
-                  (elt args (1+ it)))))
-         (aggregation-functions-form
-          (list :aggregation-functions
-                (awhen (position :AGGREGATING-BY  args)
-                  (elt args (1+ it))))))
-
-    (append `(cl-linq-select ,(first args) ,(third args))
-            where-form
-            group-by-form
-            aggregation-functions-form)))
+  `(cl-linq-select ,selectors ,from
+                   :predicate ,where
+                   :group-by ,group-by
+                   :aggregation-functions ,aggregating-by))
 
 
 (defmacro all-parser (pred sequence)
