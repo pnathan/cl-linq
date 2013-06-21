@@ -39,7 +39,9 @@
            (lambda (row)
              (map 'list
                   (lambda (f)
-                    (funcall f row)) selectors)) data-rows))))
+                    (funcall f row))
+                  selectors))
+           data-rows))))
 
 (defun group-by-tool (group-by results)
   ;;initial cut: taking the index of the table to group by
