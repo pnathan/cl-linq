@@ -62,7 +62,9 @@
 
 
 ;; peculiar name because it has to get exported. This should help
-;; minimize any namespace clashes.
+;; minimize any namespace clashes.  Note that the macro should really
+;; generate some sort of FLET here instead of a full defun, but this
+;; is easier to debug. After unit tests are added this will be easier.
 (defun cl-linq-select (columns data
                &key
                  (predicate nil)
@@ -72,7 +74,7 @@
   (let ((results)
         (data-length (length data)))
 
-    ;; Conditionally select data
+    ;; Conditionally select rows
     (loop
        for i from 0 below data-length do
        ;; iteraton via elt to support the sequence abstraction
