@@ -43,7 +43,7 @@
                   selectors))
            data-rows))))
 
-(defun group-by-tool (group-by results)
+(defun group-by-tool (group-by having results)
   ;;initial cut: taking the index of the table to group by
 
   ;; WARNING: we are grouping by EQUALP. Probably not ideal.
@@ -69,6 +69,7 @@
                &key
                  (predicate nil)
                  (aggregation-functions nil)
+                 (having nil)
                  (group-by nil))
 
   (let ((results)
@@ -97,7 +98,9 @@
       (let ((grouped-results
              (if group-by
                  (group-by-tool
-                  group-by selected-results)
+                  group-by
+                  having
+                  selected-results)
                  selected-results)))
 
         (if aggregation-functions
@@ -127,13 +130,14 @@
                        aggregation)))
             grouped-results)))))
 
-(defmacro select-parser (selectors &key from where group-by aggregating-by)
+(defmacro select-parser (selectors &key from where group-by having aggregating-by)
   "SELECT (t | <list of zero-indexed columns>) FROM <data> (WHERE predicate)
 
 Data is expected to be a 2D loopable list of lists."
   `(cl-linq-select ,selectors ,from
                    :predicate ,where
                    :group-by ,group-by
+                   :having ,having
                    :aggregation-functions ,aggregating-by))
 
 
@@ -177,53 +181,3 @@ Data is expected to be a 2D loopable list of lists."
      `(reduce ,(second args) ,(first args) ,(third args)))
     (:select
      `(select-parser ,@args))))
-
-
-
-;; (defparameter *people*
-;;   `(((:name . "stephen") (:email . "s@email.com") (:age . 33))
-;;     ((:name . "bob") (:email . "b@email.com") (:age . 49))
-;;     ((:name . "foo") (:email . "f@email.com") (:age . 10))))
-
-;; (defparameter *subjects*
-;;   '((itb001 1 john 4.0)
-;;     (itb001 1 bob 4.0)
-;;     (itb001 1 mickey 2.0)
-;;     (itb001 2 jenny 4.0)
-;;     (itb001 2 james 3.0)
-;;     (mkb114 1 john 3.0)
-;;     (mkb114 1 erica 3.3)))
-
-
-;; (query
-;;  select '(:name :age)
-;;  from *people*
-;;  where #'(lambda (row)
-;;            (> (cdr (assoc :age row)) 21)))
-
-;; (query
-;;  select t
-;;  from *subjects*
-;;  group-by '(0)                          ;first index
-;;  aggregating-by (list #'length))
-
-;; (query
-;;  select t
-;;  from *subjects*
-;;  group-by '(0)
-;;  aggregating-by
-;;  (list #'length
-;;        #'(lambda (data)
-;;            (/ (apply #'+ (mapcar #'fourth data)) (length data)))))
-
-;; (((ITB001 5) (ITB001 3.4))
-;;  ((MKB114 2) (MKB114 3.15)))
-
-
-;; (cl-linq:QUERY
-;;  :select t
-;;  :from *subjects*
-;;  :where #'(lambda (row)
-;;          (> (fourth row) 2.0 ))
-;;  :group-by '(0)
-;;  :aggregating-by #'length)
