@@ -65,9 +65,39 @@
     :initarg :alias-list
     :initform nil
     :documentation "These are the values can also refer to the
-    header."))
-  (:documentation "This is a header object: it describes the names of
-  a column, as well as the actual index of said column."))
+    header.")
+   (index
+    :accessor index
+    :initform nil
+    :initarg :indices
+    :documentation "Index data structure for the column, if any")
+   (comparator
+    :accessor comparator
+    :initform nil
+    :initarg :comparator
+    :documentation "Comparison function for the column datatype"))
+  (:documentation "Header object: it describes the names of
+  a column, as well as the actual index of said column. In part,
+  headers also define the metadata for a given column."))
+
+
+(defgeneric things-to-header (header candidate)
+  (:documentation
+   "Takes header and candidate; determines if candidate can be resolved
+to header; if so, returns the header."))
+
+(defmethod thing-to-header ((header header) (candidate string))
+  (if (string= (canonical-name header) candidate)
+      header
+      (loop for alias in (alias-list header)
+            do
+               (when
+                   (string= candidate alias)
+                 (return-from thing-to-header header)))))
+
+(defmethod thing-to-header ((header header) (candidate number))
+  (when (= (canonical-index header) candidate)
+    header))
 
 (defmethod equalg ((a header) (b header))
   (and
@@ -83,6 +113,7 @@
    (string= a (canonical-name b))))
 
 (defun equal-headers (a b)
+  "Assumes a and b are lists of headers"
   (loop
     for i in a
     for j in b
@@ -148,8 +179,8 @@
 (defmethod (setf headers) :after (new-headers (obj data-frame))
   (with-slots (headers)
       obj
-      (setf headers
-            (things-to-headers new-headers))))
+    (setf headers
+          (things-to-headers new-headers))))
 
 (defgeneric cast-to-vector (source-object)
   (:documentation "Builds an array of arrays from source-object and returns
@@ -629,7 +660,11 @@ intersect any other x0,x1 in the system"
 (defclass iterable ()
   ((finished-iterating
     :accessor finished-iterating
-    :initform nil))
+    :initform nil)
+   (current-iterator
+    :initform nil
+    :accessor current-iterator
+    :documentation "This is the current iterator's pointer"))
   (:documentation "This class supports lazy iteration"))
 
 (defgeneric reset-iteration (seq)
@@ -642,21 +677,36 @@ intersect any other x0,x1 in the system"
   (:documentation "Set the iterable to the next item"))
 
 (defgeneric root (seq)
-  (:documentation "Gratuitous leaching from Clojure's sequence abstraction"))
+  (:documentation "Head of the iterator"))
 
 (defgeneric current  (seq)
-  (:documentation "Gratuitous leaching from Clojure's sequence abstraction"))
+  (:documentation "Value of the current iterator"))
 
 (defgeneric future (seq)
-  (:documentation "Gratuitous leaching from Clojure's sequence abstraction"))
+  (:documentation "Stuff to come"))
 
 (defgeneric move (seq)
-  (:documentation "A stepper function; get data, move to the next element"))
+  (:documentation "A stepper function; get data, move to the next
+  element. Returns the data gotten from current."))
 
 (defmethod move ((iter iterable))
   (let ((data (current iter)))
     (next iter)
     data))
+
+(defmacro with-fresh-iteration ((iterator) &body body)
+  "Pushes the current iteration point and the finished iteration
+state and puts iterator into a start point state"
+  `(let ((current-iteration (current-iterator ,iterator))
+        (finished-iterating (finished-iterating ,iterator)))
+    (reset-iteration ,iterator)
+    (unwind-protect
+         (progn
+           ,@body)
+      (setf (current-iterator ,iterator) current-iteration)
+      (setf (finished-iterating ,iterator) finished-iterating))))
+
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; The table is the entry point for all queries. A query is executed
@@ -668,10 +718,7 @@ intersect any other x0,x1 in the system"
     :accessor headers
     :initarg :headers)
    (current-iterator
-    :initform 0
-    :accessor current-iterator
-    :documentation "This is the oid (system key row #) that the
-    iterator is on")
+    :initform 0)
    (unanalyzed
     :initform t
     :accessor unanalyzed
@@ -702,6 +749,14 @@ intersect any other x0,x1 in the system"
 (defmethod initialize-instance :after ((table table) &key)
   (let ((given-headers (headers table)))
     (setf (headers table) (things-to-headers given-headers))))
+
+(defmethod find-canonical-header ((table table) candidate)
+  (let ((headers (headers table)))
+    (loop for h in headers
+          do
+          (when (thing-to-header h candidate)
+            (return-from find-canonical-header h))
+          )))
 
 (defmethod create-index-on-keys ((table table))
   (let ((index
@@ -842,17 +897,136 @@ new singular page). Probably a bad idea for large data sets."
 (defparameter *foo* nil)
 (defun make-dummy-table ()
   (setf *foo*
-        (let ((table (make-instance 'table :headers '("0" "1" "2")))
-              )
-
+        (let ((table (make-instance 'table :headers '("0" "1" "2"))))
           (loop for i from 0 upto 32 by 2
                do
-                  (insert table
-                          (make-page (make-instance 'memory-store)
-                                     (loop for j from (* i 10)  below (+ (* i 10) 10)
-                                           collect `(,j ,(format nil "~a" i) ,(gensym "V") ,(random 1000))))))
+                  (insert
+                   table
+                   (make-page (make-instance 'memory-store)
+                              (loop for j from (* i 10)  below (+ (* i 10) 10)
+                                    collect
+                                    `(,j ,(format nil "~a" i) ,(gensym "V") ,(random 1000))))))
           table)))
 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defclass index ()
+  ((referent
+    :accessor referent
+    :initform nil
+    :initarg :referent
+    :documentation "Must be of class table or nil. The underlying table
+   the index is over.")
+   (target-column
+   :accessor target-column
+   :initform nil
+   :initarg :target-column
+   :documentation "The column the index has indexed. Must be of type
+   header or nil.")
+   (index
+    :accessor index
+    :initform nil
+    :initarg :index
+    :documentation "The actual index. Provides O(fast) time lookup for
+    each element in target-column.")
+   (built
+    :accessor built
+    :initform nil
+    :initarg :built
+    :documentation "Is the index generated?"))
+  (:documentation "Base class for indexes. The invariant for this
+  index family is that the table does not change under it. This
+  implies an immutable data structure for the lifetime of a valid
+  index."))
+
+(defmethod initialize-instance :after ((index index) &key)
+  (assert (eq (type-of (target-column index)) 'header))
+  (assert (eq (type-of (referent index)) 'table)))
+
+(defun make-index (table header type-test)
+  (let ((header (find-canonical-header table header)))
+    (make-instance 'index
+                   :target-column header
+                   :index (cl-containers:make-container
+                           'cl-containers:red-black-tree
+                           :sorter #'(lambda (x y)
+                                       ;; Our index-data lives in CAR, our
+                                       ;; indexed referent lives in CDR.
+                                       ;; i.e., (item-at table (cdr x))
+                                       (funcall type-test (car x) (car y))))
+                   :referent table)))
+
+(defmethod attach-index ((table table) (header t) &optional (index-type 'index))
+
+  (let* ((header (find-canonical-header table header))
+         (comparator (comparator header))
+
+         )
+    (unless (comparator header)
+      (error "Header ~a must have a comparator to attach an index" header))
+    (let ((new-index
+            (make-instance
+             index-type
+             :target-column header
+             :referent table
+             :index (cl-containers:make-container
+                     'cl-containers:red-black-tree
+                     :sorter #'(lambda (x y)
+                                 ;; Our index-data lives in CAR, our
+                                 ;; indexed referent lives in CDR.
+                                 ;; i.e., (item-at table (cdr x))
+                                 (funcall comparator (car x) (car y)))))))
+      (setf (index header) new-index)
+      (build-index (index header))
+      new-index)))
+
+(defmethod build-index ((index index))
+  "This index is over the oids of the table given, mapping oid to
+content"
+  (let ((table (referent index))
+        (column (target-column index)))
+    (with-fresh-iteration (table)
+     (loop until (finished-iterating table)
+           do
+              (insert index (cons
+                             (ref (current table)
+                                  :column
+                                  column)
+                             (current-iterator table)
+                             ))
+              (next table))
+      (setf (built index) t))))
+
+(defmethod index-of ((index index) item)
+  "Returns the oid of the content, if any. This allows a quick lookup
+in the pages of the table"
+  (multiple-value-bind (result got-p)
+      (cl-containers:search-for-item (index index) item :key #'car)
+    (values (cdr result) got-p)))
+
+(defmethod lengthg ((index index))
+  (cl-containers:size (index index)))
+
+(defmethod insert ((index index) (item t) &key)
+  (cl-containers:insert-item (index index) item))
+
+(defmethod ref ((table table) (header header) item)
+  (let ((it
+          (index-of (index header) item)))
+    (when it
+     (item-at table it))))
+
+(defmethod ref ((table table) (type (eql :row)) index)
+  (item-at table index))
+
+(defgeneric lookup (object item-key))
+
+(defmethod lookup ((table table) key)
+  (item-at table ))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;; The REF api allows a simple generalized reference approach.
 ;;
@@ -863,7 +1037,18 @@ new singular page). Probably a bad idea for large data sets."
 ;;
 ;; And finally, a cell should be denotable by a combination row and column.
 
-(defgeneric ref (data-frame type selector))
+(defgeneric ref (container type selector))
+
+(defmethod ref ((table table) (type (eql :column)) selector)
+  "Returns the column; no more can be found here"
+  (find-canonical-header table selector))
+
+(defmethod ref ((item vector) (type (eql :column)) (selector header))
+  (ref item :column (canonical-index selector)))
+
+(defmethod ref ((item vector) (type (eql :column)) (selector integer))
+  (aref item selector))
+
 
 (defmethod ref ((data-frame data-frame) (type (eql :row)) selector)
   )
@@ -871,10 +1056,12 @@ new singular page). Probably a bad idea for large data sets."
 (defmethod ref ((data-frame data-frame) (type (eql :cell)) selector))
 
 
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Finally, the query.
 (defclass query ()
   ())
+
 
 
 
@@ -885,17 +1072,6 @@ new singular page). Probably a bad idea for large data sets."
 (defgeneric group-by (data-frame condition &key &allow-other-keys))
 (defgeneric join (data-frame-a data-frame-b &key &allow-other-keys))
 (defgeneric inner (data-frame query &key &allow-other-keys))
-
 (defgeneric insert (container object &key &allow-other-keys))
-
-;(defgeneric headers (data-frame &key &allow-other-keys))
-
-
-
 (defmethod where ((obj data-frame) condition &key &allow-other-keys)
-  (let ((new-data-table (cutout-clone obj)))
-    (loop for i from 0 below (lengthg obj)
-          do
-             (let ((row (array-row-at (data obj) i)))
-              (when (funcall condition row)
-                (insert new-data-table row :row t))))))
+  )
