@@ -43,11 +43,11 @@
                   selectors))
            data-rows))))
 
-(defun group-by-tool (group-by having results)
+(defun group-by-tool (group-by results &key (test #'equalp) )
   ;;initial cut: taking the index of the table to group by
 
   ;; WARNING: we are grouping by EQUALP. Probably not ideal.
-  (let ((dummy-table (make-hash-table :test #'equalp)))
+  (let ((dummy-table (make-hash-table :test test)))
     (loop for row in results
        do
          (loop for g in group-by
@@ -58,7 +58,6 @@
                           (list row))
                     (push row (gethash row-idx dummy-table))))))
     (alexandria:hash-table-alist dummy-table)))
-
 
 
 ;; peculiar name because it has to get exported. This should help
@@ -167,6 +166,8 @@ Data is expected to be a 2D loopable list of lists."
 
 (defmacro query (operation &rest args)
   (ecase operation
+    (:group-by
+     `(group-by ,group-by-tool ,@args))
     (:min
      `(min-parser ,operation ,@args))
     (:all
