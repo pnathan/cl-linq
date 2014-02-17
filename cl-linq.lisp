@@ -13,6 +13,8 @@
 ;;; enough. LOOP is an iteration construct that happens to have
 ;;; aggregation and selection capabilities.
 
+;;; (Later on...) This library is slow. See REBUILD.md.
+
 (defpackage :cl-linq
   (:use
    :common-lisp
@@ -21,6 +23,8 @@
    #:query
    #:cl-linq-select))
 (in-package :cl-linq)
+
+(warn "cl-linq is a slow and deprecated package. Please contribute to CLINK.")
 
 (defun selector-to-lambda (selector)
   "Convert a selector to a function."

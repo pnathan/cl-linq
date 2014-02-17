@@ -1,8 +1,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;; cl-linq library
+;;;; clink library
 ;;;; LLGPL
-
-;;;; pluggable in-memory database system, loosely derived from LINQ.
+;;;;
+;;;; pluggable in-memory database system, inspired by LINQ.
 ;;;;
 ;;;; Architecture: operators are singular, take one or more data
 ;;;; frames and return a data frame. Data frames store metadata,
@@ -36,6 +36,20 @@
                 :fiveam
                 :local-time
                 :cl-containers))
+
+(defpackage clink
+  (:use
+   :common-lisp
+
+   :alexandria
+   :anaphora
+   :metabang-bind
+   :fiveam
+   :local-time
+   :cl-containers)
+  (:export ))
+
+(in-package :clink)
 
 (defparameter *debug* nil "Set to enable debug logging to *debug-stream*")
 (defparameter *debug-stream* t "Print to this stream")
@@ -137,7 +151,7 @@
   t)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; The data frame forms the fundamental unit of the cl-linq system.
+;;; The data frame forms the fundamental unit of the clink system.
 (defclass data-frame ()
   ((headers
     :accessor headers
@@ -1380,7 +1394,7 @@ column. Cells can be implemented with an alist `((:row ,r) (:column
   ())
 
 
-;;; This is the top layer of access to the cl-linq system
+;;; This is the top layer of access to the clink system
 (defgeneric yield (data-frame query &key &allow-other-keys))
 (defgeneric update (data-frame query &key &allow-other-keys))
 (defgeneric where (data-frame condition &key &allow-other-keys))
