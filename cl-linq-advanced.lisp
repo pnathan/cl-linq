@@ -76,16 +76,25 @@
     :accessor comparator
     :initform nil
     :initarg :comparator
-    :documentation "Comparison function for the column datatype"))
+    :documentation "Comparison function for the column datatype")
+   (equality
+    :accessor equality
+    :initform nil
+    :initarg :equality
+    :documentation "Equality function for the column datatype")
+   (datatype
+    :accessor datatype
+    :initform nil
+    :initarg :datatype
+    :documentation "Datatype known for the column. If this is not
+    known at time of request, nil is returned."))
   (:documentation "Header object: it describes the names of
   a column, as well as the actual index of said column. In part,
   headers also define the metadata for a given column."))
 
-
-(defgeneric things-to-header (header candidate)
-  (:documentation
-   "Takes header and candidate; determines if candidate can be resolved
-to header; if so, returns the header."))
+(defgeneric thing-to-header (header candidate)
+  (:documentation "Evaluate `candidate` to see if it could be resolved
+  to the `header` object passed in"))
 
 (defmethod thing-to-header ((header header) (candidate string))
   (if (string= (canonical-name header) candidate)
@@ -99,6 +108,10 @@ to header; if so, returns the header."))
 (defmethod thing-to-header ((header header) (candidate number))
   (when (= (canonical-index header) candidate)
     header))
+
+(defgeneric equalg (a b)
+  (:documentation "Generic equality function. Long-term, rename and rewrite to
+  conform to CDR 8"))
 
 (defmethod equalg ((a header) (b header))
   (and
@@ -651,10 +664,20 @@ intersect any other x0,x1 in the system"
   (:documentation "This class supports lazy iteration"))
 
 (defgeneric reset-iteration (seq)
-  (:documentation "Reset the current and future to the point of root"))
+  (:documentation "Reset the current and future to the point of
+  root. Reset-iteration should not be destructive to the data stream;
+  see RESETTABLE-P to check."))
 
 (defmethod reset-iteration :before ((iterable iterable))
-  (setf (finished-iterating iterable) nil))
+  (setf (finished-iterating-p iterable) nil))
+
+(defgeneric resettable-p (iterable)
+  (:documentation "Is the iterable resettable? This should be t for
+  file and memory data structures; network based or stream data
+  structures should be nil. The default for the iterable hierarchy is t"))
+
+(defmethod resettable-p ((iterable iterable))
+  t)
 
 (defgeneric next (seq)
   (:documentation "Set the iterable to the next item"))
@@ -932,28 +955,34 @@ new singular page). A very bad idea for large data sets."
   (assert (eq (type-of (target-column index)) 'header))
   (assert (eq (type-of (referent index)) 'table)))
 
-(defun make-index (table header type-test)
-  (let ((header (find-canonical-header table header)))
-    (make-instance 'index
-                   :target-column header
-                   :index (cl-containers:make-container
-                           'cl-containers:red-black-tree
-                           :sorter #'(lambda (x y)
-                                       ;; Our index-data lives in CAR, our
-                                       ;; indexed referent lives in CDR.
-                                       ;; i.e., (item-at table (cdr x))
-                                       (funcall type-test (car x) (car y))))
-                   :referent table)))
+(defun guess-comparator-function (value)
+  "Reckons a probable comparison function for value. Returns nil if
+nothing could be guessed."
+  (cond
+    ((numberp value)
+     #'>)
+    ((stringp value)
+     #'string>)
+    ((symbolp value)
+     (lambda (a b)
+       (string> (string a)
+                (string b))))
+    ((characterp value)
+     #'char>)))
 
-(defmethod attach-index ((table table) (header t) &optional (index-type 'index))
-
-  (let* ((header (find-canonical-header table header))
-         (comparator (comparator header))
-
-         )
-    (unless (comparator header)
-      (error "Header ~a must have a comparator to attach an index" header))
-    (let ((new-index
+(defun guess-equality-function (value)
+  "Reckons a probable comparison function for value. Returns nil if
+nothing could be guessed."
+  (cond
+    ((numberp value)
+     #'=)
+    ((stringp value)
+     #'string=)
+    ((symbolp value)
+     (lambda (a b)
+       (eq a b)))
+    ((characterp value)
+     #'char=)))
             (make-instance
              index-type
              :target-column header
@@ -992,6 +1021,32 @@ in the pages of the table"
   (multiple-value-bind (result got-p)
       (cl-containers:search-for-item (index index) item :key #'car)
     (values (cdr result) got-p)))
+;;; Top-level function; use to attach the index on the header.
+(defmethod attach-index ((table table) generalized-header &key
+                                                    (strict-comparator))
+
+  (let ((header (find-canonical-header table generalized-header)))
+
+    (when (not (comparator header))
+      (if strict-comparator
+          (error "Header ~a must have a comparator to attach an index" header)
+          (unless (setf (comparator header)
+                        (guess-comparator-function (ref table :cell
+                                                        `((:column ,(canonical-index header))
+                                                          (:row 0)))))
+            (error "Unable to guess a comparator function"))))
+
+    (when (not (equality header))
+      (if strict-comparator
+          (error "Header ~a must have an equality tester to attach an index" header)
+          (unless (setf (equality header)
+                        (guess-equality-function (ref table :cell
+                                                        `((:column ,(canonical-index header))
+                                                          (:row 0)))))
+            (error "Unable to guess a comparator function"))))
+
+    ;; Build the index with a r-b tree.
+    (make-rb-index table header)))
 
 (defmethod lengthg ((index index))
   (cl-containers:size (index index)))
