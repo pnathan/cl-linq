@@ -225,17 +225,6 @@ to header; if so, returns the header."))
 (defmethod cast-to-vector ((array array))
   (values array (array-dimension array 0)))
 
-;; (defun array-row-at (array subscript)
-;;   (let* ((starting-point
-;;           (array-row-major-index array subscript 0))
-;;          (width (array-dimension array 1))
-;;          (row (make-array (list width))))
-;;     (loop for i from 0 below width
-;;           do
-;;              (setf (aref row i) (row-major-aref array (+ starting-point i))))
-;;     row))
-
-
 (defmethod cutout-clone ((frame data-frame))
   "A \"cutout\" clone of the data frame, with the same headers and
   width, but without the data."
@@ -333,8 +322,8 @@ to header; if so, returns the header."))
   (setf (data page) new-value)
   (data-frame page))
 
-;; Ensures that data being inserted is a data frame.
 (defmethod (setf data) :around (new-data (page page))
+  "Ensures that data being inserted is a data frame."
   (when (locked-p page)
     (error "Attempting to modify a locked page."))
   ;; If it's being not being set to nil and it's not a data-frame...
@@ -370,11 +359,8 @@ to header; if so, returns the header."))
             (make-data-frame data headers)))
     obj))
 
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; The caching logic manages loading and unloading in reasonably smart ways.
-
 
 ;;; This is what can be put in a cache
 (defclass cachable-item ()
@@ -424,8 +410,7 @@ to header; if so, returns the header."))
   its members, knows how to compare the members, and knows how to
   determine if it is overflowing (and thus eviction time)"))
 
-
-;; This API is groady in names.
+;; This API is badly named.
 
 (defmethod note-cached ((item cachable-item) (cache cache))
   (setf (cache item) cache)
@@ -434,7 +419,6 @@ to header; if so, returns the header."))
 (defmethod note-uncached ((item cachable-item) (cache cache))
   (setf (cache item) nil)
   (setf (cached item) nil))
-
 
 ;; Two things need to happen: adding the item to the cache-specific
 ;; data structure and then fiddling the generic cache data bits.
@@ -454,7 +438,6 @@ to header; if so, returns the header."))
   (cl-containers:delete-item (members cache) item))
 
 
-;;;
 (defgeneric add-to-cache (item cache)
   (:documentation "add to cache calls insert-cache-item, which is
   expected to be implemented for a given cache type, and also handles
@@ -498,8 +481,7 @@ to header; if so, returns the header."))
 
 (defmethod access ((item cachable-item) (cache cache))
   (error "The generic cache isn't working out too well (some bugs got
-  in the hacker's head and left a mess). Advise using LRU-CACHE..."))
-
+  in the hacker's head and left a few holes). Advise using LRU-CACHE..."))
 
 ;;; LRU performs well on hot data.
 (defclass lru-cache (cache)
@@ -660,7 +642,7 @@ intersect any other x0,x1 in the system"
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defclass iterable ()
   ((finished-iterating
-    :accessor finished-iterating
+    :accessor finished-iterating-p
     :initform nil)
    (current-iterator
     :initform nil
@@ -696,22 +678,34 @@ intersect any other x0,x1 in the system"
     data))
 
 (defmacro with-fresh-iteration ((iterator) &body body)
-  "Pushes the current iteration point and the finished iteration
-state and puts iterator into a start point state"
-  `(let ((current-iteration (current-iterator ,iterator))
-        (finished-iterating (finished-iterating ,iterator)))
+  "Pushes the current iteration point and the finished iteration state
+and puts iterator into a start point state; completion or error pops
+the state and returns to the calling iteration state."
+  (let ((current-iteration (gensym))
+        (finished-iterating (gensym)))
+
+   `(let ((,current-iteration (current-iterator ,iterator))
+          (,finished-iterating (finished-iterating-p ,iterator)))
+
+      (unless (resettable-p ,iterator)
+          (error "~a is not resettable; fresh iterations not possible" ,iterator))
+
     (reset-iteration ,iterator)
     (unwind-protect
          (progn
            ,@body)
-      (setf (current-iterator ,iterator) current-iteration)
-      (setf (finished-iterating ,iterator) finished-iterating))))
+        (setf (current-iterator ,iterator) ,current-iteration)
+        (setf (finished-iterating-p ,iterator) ,finished-iterating)))))
 
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; The table is the entry point for all queries. A query is executed
 ;;; upon a table, and returns a table.
+;;;
+;;; Present design is that tables are append-only, no delete. The
+;;; intended use pattern is a load->analyze->new-table->new-analysis
+;;; pipeline.
 
 (defclass table (iterable)
   ((headers
@@ -756,9 +750,10 @@ state and puts iterator into a start point state"
     (loop for h in headers
           do
           (when (thing-to-header h candidate)
-            (return-from find-canonical-header h))
-          )))
+            (return-from find-canonical-header h)))))
 
+;; This method name is bad. It actually creates an index on the
+;; synthetic keys tables have.
 (defmethod create-index-on-keys ((table table))
   (let ((index
           (k-d-tree
@@ -775,7 +770,8 @@ state and puts iterator into a start point state"
              (setf (last-key page) (1- (+ counter (lengthg page))))
              (setf counter (+  counter (lengthg page)))))
   (create-index-on-keys table)
-  (setf (unanalyzed table) nil))
+  (setf (unanalyzed table) nil)
+  t)
 
 (defmethod (setf root) (new-value (table table))
   (error "Unable to set table's root"))
@@ -814,6 +810,9 @@ state and puts iterator into a start point state"
     (elt (data current-page)
          (- index (first-key current-page)))))
 
+(defmethod item-at ((table table) (indicies vector))
+  (map 'vector #'(lambda (i) (item-at table i)) indicies))
+
 (defmethod item-at :after ((table table) (index number))
   (declare (ignore index))
   (decf (accesses-to-next-eviction table))
@@ -826,7 +825,7 @@ state and puts iterator into a start point state"
   (when (unanalyzed table)
     (analyze-table table))
 
-  (when (finished-iterating table)
+  (when (finished-iterating-p table)
     (error "Unable to seek data; iterator finished"))
 
   (item-at table (current-iterator table)))
@@ -834,7 +833,7 @@ state and puts iterator into a start point state"
 (defmethod next ((table table))
   (if (> (1- (lengthg table)) (current-iterator table) )
       (incf (current-iterator table))
-      (setf (finished-iterating table) t)))
+      (setf (finished-iterating-p table) t)))
 
 (defmethod lengthg ((table table))
   (loop for page across (pages table)
@@ -843,7 +842,7 @@ state and puts iterator into a start point state"
 (defmethod data ((table table))
   "Collects all of the data in the pages and returns it as a single
 vector of vectors (suitable for putting into a new table or using as a
-new singular page). Probably a bad idea for large data sets."
+new singular page). A very bad idea for large data sets."
   (let ((retval (make-array '(2) :adjustable t :fill-pointer 0)))
 
     (loop for page across (pages table)
@@ -853,11 +852,11 @@ new singular page). Probably a bad idea for large data sets."
              (evict-to-size *page-cache*))
     retval))
 
-;; At present, tables
 (defmethod (setf data) (new-value (table table))
   (error "Unable to directly set the data on a table"))
 
 (defmethod insertable-page ((table table))
+  "Return the page that data can be inserted into."
   (aref (pages table) (1- (length (pages table)))))
 
 (defmethod insert :before ((table table) (anything t) &key)
@@ -884,21 +883,9 @@ new singular page). Probably a bad idea for large data sets."
         do
         (insert table row)))
 
-
-(defmethod current ((seq list))
-  (car seq))
-(defmethod future ((seq list))
-  (cdr seq))
-
-(defmethod next ((seq list))
-  (setf (car seq) (cadr seq))
-  (setf (cdr seq) (cddr seq)))
-
-
 (defparameter *foo* nil)
 (defun make-dummy-table ()
-  (setf *foo*
-        (let ((table (make-instance 'table :headers '("0" "1" "2"))))
+  (let ((table (make-instance 'table :headers '("0" "1" "2" "3"))))
           (loop for i from 0 upto 32 by 2
                do
                   (insert
@@ -1064,8 +1051,6 @@ in the pages of the table"
   ())
 
 
-
-
 ;;; This is the top layer of access to the cl-linq system
 (defgeneric yield (data-frame query &key &allow-other-keys))
 (defgeneric update (data-frame query &key &allow-other-keys))
@@ -1076,3 +1061,18 @@ in the pages of the table"
 (defgeneric insert (container object &key &allow-other-keys))
 (defmethod where ((obj data-frame) condition &key &allow-other-keys)
   )
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; random functions
+
+
+(defmethod current ((seq list))
+  (car seq))
+
+(defmethod future ((seq list))
+  (cdr seq))
+
+(defmethod next ((seq list))
+  (setf (car seq) (cadr seq))
+  (setf (cdr seq) (cddr seq)))
