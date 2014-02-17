@@ -713,10 +713,10 @@ the state and returns to the calling iteration state."
       (unless (resettable-p ,iterator)
           (error "~a is not resettable; fresh iterations not possible" ,iterator))
 
-    (reset-iteration ,iterator)
-    (unwind-protect
-         (progn
-           ,@body)
+      (reset-iteration ,iterator)
+      (unwind-protect
+           (progn
+             ,@body)
         (setf (current-iterator ,iterator) ,current-iteration)
         (setf (finished-iterating-p ,iterator) ,finished-iterating)))))
 
@@ -909,14 +909,14 @@ new singular page). A very bad idea for large data sets."
 (defparameter *foo* nil)
 (defun make-dummy-table ()
   (let ((table (make-instance 'table :headers '("0" "1" "2" "3"))))
-          (loop for i from 0 upto 32 by 2
-               do
-                  (insert
-                   table
-                   (make-page (make-instance 'memory-store)
-                              (loop for j from (* i 10)  below (+ (* i 10) 10)
-                                    collect
-                                    `(,j ,(format nil "~a" i) ,(gensym "V") ,(random 1000))))))
+    (loop for i from 0 upto 32 by 2
+          do
+             (insert
+              table
+              (make-page (make-instance 'memory-store)
+                         (loop for j from (* i 10)  below (+ (* i 10) 10)
+                               collect
+                               `(,j ,(format nil "~a" i) ,(gensym "V") ,(random 1000))))))
     (analyze-table table)
     table))
 
@@ -1224,44 +1224,47 @@ nothing could be guessed."
        (eq a b)))
     ((characterp value)
      #'char=)))
-            (make-instance
-             index-type
-             :target-column header
-             :referent table
-             :index (cl-containers:make-container
-                     'cl-containers:red-black-tree
-                     :sorter #'(lambda (x y)
-                                 ;; Our index-data lives in CAR, our
-                                 ;; indexed referent lives in CDR.
-                                 ;; i.e., (item-at table (cdr x))
-                                 (funcall comparator (car x) (car y)))))))
+
+(defun make-rb-index (table header)
+  (let* ((comparator (comparator header))
+           (new-index
+             (make-instance
+              'index
+              :target-column header
+              :referent table
+              :index (cl-containers:make-container
+                      ;; Our index-data lives in CAR, our
+                      ;; indexed referent lives in CDR.
+                      ;; i.e., (item-at table (cdr x))
+                      'cl-containers:red-black-tree
+                      :key #'car
+                      :sorter #'(lambda (x y)
+                                  (funcall comparator x y))))))
       (setf (index header) new-index)
       (build-index (index header))
-      new-index)))
+      new-index))
 
 (defmethod build-index ((index index))
-  "This index is over the oids of the table given, mapping oid to
-content"
+  "Creates an index over the oids of the table given, mapping oid to
+content. Runs in O(n)."
   (let ((table (referent index))
         (column (target-column index)))
     (with-fresh-iteration (table)
-     (loop until (finished-iterating table)
-           do
-              (insert index (cons
-                             (ref (current table)
-                                  :column
-                                  column)
-                             (current-iterator table)
-                             ))
-              (next table))
+      (loop
+        until (finished-iterating-p table)
+        do
+           (insert index
+                   ;; Cons the current element that we're indexing
+                   ;; against the oid.
+                   (cons
+                    (ref (current table)
+                         :column
+                         column)
+                    (current-iterator table)))
+           (next table))
       (setf (built index) t))))
 
-(defmethod index-of ((index index) item)
-  "Returns the oid of the content, if any. This allows a quick lookup
-in the pages of the table"
-  (multiple-value-bind (result got-p)
-      (cl-containers:search-for-item (index index) item :key #'car)
-    (values (cdr result) got-p)))
+
 ;;; Top-level function; use to attach the index on the header.
 (defmethod attach-index ((table table) generalized-header &key
                                                     (strict-comparator))
@@ -1289,43 +1292,73 @@ in the pages of the table"
     ;; Build the index with a r-b tree.
     (make-rb-index table header)))
 
+(defmethod oid-of ((table table) generalized-header item)
+  "Returns the array of oids of the item, if any. This allows a quick
+lookup into the pages of the table"
+  (let* ((header (find-canonical-header table generalized-header))
+         (equal-foo (equality header)))
+
+    (map 'vector
+         #'cdr
+         (cl-containers:collect-elements
+                 (index (index header ))
+                 :filter #'(lambda (x)
+                             (funcall equal-foo item (car x)))))))
+
 (defmethod lengthg ((index index))
   (cl-containers:size (index index)))
 
 (defmethod insert ((index index) (item t) &key)
   (cl-containers:insert-item (index index) item))
 
-(defmethod ref ((table table) (header header) item)
-  (let ((it
-          (index-of (index header) item)))
-    (when it
-     (item-at table it))))
 
-(defmethod ref ((table table) (type (eql :row)) index)
-  (item-at table index))
 
-(defgeneric lookup (object item-key))
-
-(defmethod lookup ((table table) key)
-  (item-at table ))
+;; select * from *foo* where *foo*."0" == 201
+;; =>
+;; (item-at *foo* (oid-of 0 201))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
-;;; The REF api allows a simple generalized reference approach.
-;;
-;; A ref should be able to point at a column; said column should be
-;; denoted by a header, which should then direct to the appropriate
-;; index.  A ref should also be able to point at a given row, which be
-;; returnable.
-;;
-;; And finally, a cell should be denotable by a combination row and column.
 
-(defgeneric ref (container type selector))
+(defgeneric ref (container type selector)
+  (:documentation "The REF api allows a simple generalized reference
+approach to addressing data.
 
+A ref should be able to point at a column; said column should be
+denoted by a header, which should then direct to the appropriate
+index.  A ref should also be able to point at a given row, which be
+returnable.
+
+And finally, a cell should be denotable by a combination row and
+column. Cells can be implemented with an alist `((:row ,r) (:column
+,c))
+
+
+
+"))
+
+
+;; ref on tables
 (defmethod ref ((table table) (type (eql :column)) selector)
   "Returns the column; no more can be found here"
   (find-canonical-header table selector))
+
+(defmethod ref ((table table) (header header) item)
+  (let ((it
+          (oid-of (index header) item)))
+    (when it
+      (item-at table it))))
+
+(defmethod ref ((table table) (type (eql :row)) index)
+  (item-at table index))
+
+(defmethod ref ((table table) (type (eql :cell)) (pair list))
+  "Address by column x table-oid"
+  (let ((row (item-at table (cadr (assoc :row pair)))))
+    (ref row :column (cadr (assoc :column pair)))))
+
+;; Ref on vectors
 
 (defmethod ref ((item vector) (type (eql :column)) (selector header))
   (ref item :column (canonical-index selector)))
@@ -1333,13 +1366,13 @@ in the pages of the table"
 (defmethod ref ((item vector) (type (eql :column)) (selector integer))
   (aref item selector))
 
-
+;; Ref on data frames
 (defmethod ref ((data-frame data-frame) (type (eql :row)) selector)
-  )
-(defmethod ref ((data-frame data-frame) (type (eql :column)) selector))
-(defmethod ref ((data-frame data-frame) (type (eql :cell)) selector))
-
-
+  (error "Unimplemented"))
+(defmethod ref ((data-frame data-frame) (type (eql :column)) selector)
+  (error "Unimplemented"))
+(defmethod ref ((data-frame data-frame) (type (eql :cell)) selector)
+  (error "Unimplemented"))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Finally, the query.
