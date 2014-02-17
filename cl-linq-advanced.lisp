@@ -917,8 +917,249 @@ new singular page). A very bad idea for large data sets."
                               (loop for j from (* i 10)  below (+ (* i 10) 10)
                                     collect
                                     `(,j ,(format nil "~a" i) ,(gensym "V") ,(random 1000))))))
-          table)))
+    (analyze-table table)
+    table))
 
+;;;; Implementation of a range tree. This is used as the second
+;;;; fundamental block of the index system. Any particular query where
+;;;; X > Y && X < Z will fall into this area. Note that Y can be -inf
+;;;; and Z +inf.
+
+(defclass range-tree ()
+  ((root
+    :accessor root
+    :initform nil
+    :initarg :root
+    :documentation "Root node of the range tree. Nil implies
+    uninitialized.")
+   (comparator
+    :accessor comparator
+    :initform #'>
+    :initarg :comparator
+    :documentation "Compares elements. Must be isomorphic to Z. ")
+   (equality
+    :accessor equality
+    :initform #'=
+    :initarg :comparator
+    :documentation "Compares elements. Must be isomorphic to Z. "))
+
+
+  (:documentation "A data structure useful for indexing & building
+  sargable queries (https://en.wikipedia.org/wiki/Sargable). I.e.,
+  select * from table where key > foo and key < bar => range query."))
+
+(defclass range-tree-node ()
+  ((tree
+    :accessor tree
+    :initform nil
+    :initarg :tree
+    :documentation "A node knows where it lives.")
+   (key
+    :accessor key
+    :initform (error "A key must be supplied to the node")
+    :initarg :key
+    :documentation "The value that is compared against.")
+   (data
+    :accessor data
+    :initform nil
+    :initarg :data
+    :documentation "The actual data (row) of the node.")
+   ;; (next
+   ;;  :accessor next
+   ;;  :initform nil
+   ;;  :initarg :next
+   ;;  :documentation "If set, the next node in the leaf list")
+   ;; (previous
+   ;;  :accessor previous
+   ;;  :initform nil
+   ;;  :initarg :previous
+   ;;  :documentation "If set, the previous node in the leaf list")
+   (parent
+    :accessor parent
+    :initform nil
+    :initarg :parent
+    :documentation "The parent of the node. Nil only if the root node.")
+   (left
+    :accessor left
+    :initform nil
+    :initarg :left
+    :documentation "The left node. Nil for leaf nodes.")
+   (right
+    :accessor right
+    :initform nil
+    :initarg :right
+    :documentation "The right node. Nil for leaf nodes")))
+
+;; (defmethod leaf-p ((node range-tree-node))
+;;   (not (or (left node) (right node) (key node))))
+
+(defun make-range-tree (comparator &optional data)
+  (assert (functionp comparator))
+  (let ((tree
+          (make-instance 'range-tree
+                         :comparator comparator)))
+    (if data
+        (insert tree data)
+        tree)))
+
+(defmethod insert ((tree range-tree) key &key data)
+  (let ((temp (root tree)))
+    (if temp
+        (insert temp key :data data)
+        (setf (root tree)
+              (make-instance 'range-tree-node
+                             :key key
+                             :tree tree
+                             :data data))))
+  tree)
+
+(defmacro new-node (parent-node node-form key data)
+  (let ((node-name (gensym)))
+    `(let ((,node-name ,node-form))
+      (if ,node-name
+          (insert ,node-form ,key :data ,data)
+          (setf ,node-form
+                (make-instance
+                 'range-tree-node
+                 :key ,key
+                 :data ,data
+                 :parent ,parent-node
+                 :tree (tree ,parent-node)))))))
+
+;; inserts with standard binary search tree insertion approach. Data
+;; is stored in-node.
+(defmethod insert ((node range-tree-node) key &key data)
+  (if (funcall (comparator (tree node)) (key node) key)
+      (new-node node (left node) key data)
+      (new-node node (right node) key data))
+  node)
+
+
+(defgeneric map-over (container funcallable-for-node &key)
+  (:documentation "Maps over the elements of container, executing
+  funcallable on each of them."))
+
+(defmethod map-over ((tree range-tree) func &key)
+  (when (root tree)
+    (map-over (root tree) func)))
+
+(defmethod map-over ((node range-tree-node) func &key (level 1))
+  "Pre-order call order of func on node and its children. Passes level
+to children."
+  (list
+   (funcall func node level)
+   (when (left node)
+     (map-over (left node) func :level (1+ level)))
+
+   (when (right node)
+    (map-over (right node) func :level (1+ level)))))
+
+(defun find-range (top bottom node)
+  (let ((result))
+    ;; non-pruning implementation of a range find. O(n)
+    (map-over node
+              #'(lambda (node depth)
+                  (declare (ignore depth))
+                  (when (and (>= (key node) bottom)
+                             (< (key node) top))
+                    (push (key node) result))))
+    result))
+
+(defun println (&rest args)
+  (funcall #'format t "~&~A~%" args))
+
+(defmacro sure (condition &body body)
+  ;; Sure, it returns true when cond is not true.
+  ;; Sure, bro. Sure.
+  (let ((result (gensym)))
+    `(let ((,result ,condition))
+       (cond (,result
+              ,@body)
+             (t t)))))
+
+(defun time-to-prune-p (node cut-point)
+  (let ((key (key node))
+        (left (when (left node)
+                (key (left node))))
+        (right (when (right node)
+                 (key (right node)))))
+    (when (and (> cut-point key)
+               (sure left
+                 (> cut-point left))
+               (sure right
+                 (< cut-point right)))
+        :yes)))
+
+(defun find-at-most-in-tree (node top)
+  (labels ((finder (node top)
+             (if (funcall (comparator (tree node)) (key node) top)
+                 (cond ((left node)
+                        (finder (left node) top)))
+                 (cond ((right node)
+                        (finder (right node) top))))
+             (when (time-to-prune-p node top)
+                (return-from find-at-most-in-tree node))))
+    (finder node top)))
+
+(defun find-range-in-tree (node bottom top)
+  "[bottom, top)"
+  (assert node)
+  (let ((top-node (find-at-most-in-tree node top)))
+    (loop
+      for prev = top-node then (find-predecessor prev)
+      until (< (key prev) bottom)
+      collect prev)))
+
+(defmethod leaf-p ((node range-tree-node))
+  (not (or (left node)
+            (right node))))
+
+(defgeneric find-minimum (node))
+(defmethod find-minimum ((node range-tree-node))
+  "Minimum is leftmost"
+  ;; We're at the end.
+  (if (or (leaf-p node)
+          (not (left node)))
+      node
+      (find-minimum (left node))))
+
+(defgeneric find-maximum (node))
+(defmethod find-maximum ((node range-tree-node))
+  "Maximum is rightmost"
+  (if (or (leaf-p node)
+          (not (right node)))
+      node
+      (find-maximum (right node))))
+
+(defmethod find-predecessor ((node range-tree-node))
+  "Finds the closest node that's smaller than `node`"
+  (if (left node)
+      (find-minimum (left node))
+      (find-right-motion node)))
+
+(defmethod find-successor ((node range-tree-node))
+  "Finds the one node that's bigger than `node`"
+  (if (right node)
+      (find-minimum (right node))
+      (find-left-motion node)))
+
+;; The find-*-motions attempt to find the next "leftmost" or
+;; "rightmost" node.
+
+(defun find-left-motion (node)
+  (if (parent node)
+      (if (funcall (equality (tree node)) (left (parent node)) node)
+          (parent node)
+          (find-left-motion (parent node)))
+      nil))
+
+(defun find-right-motion (node)
+  (if (parent node)
+      (if (funcall (equality (tree node))
+                   (right (parent node)) node)
+          (find-right-motion (parent node))
+          (parent node))
+      nil))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
