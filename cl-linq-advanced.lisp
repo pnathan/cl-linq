@@ -31,8 +31,9 @@
 ;;;; streaming datasets and queries.
 ;;;;
 
-(ql:quickload '(:cl-store
+(ql:quickload '(;:cl-store
                 :alexandria
+                :fiveam
                 :local-time
                 :cl-containers))
 
@@ -595,13 +596,13 @@ dropping it from memory."
 (defmethod (setf data) (new-value (store disk-store))
   (write-store store new-value))
 
-(defmethod read-store ((store disk-store))
-  (cl-store:restore (filename store)))
+;; (defmethod read-store ((store disk-store))
+;;   (cl-store:restore (filename store)))
 
-(defmethod write-store ((store disk-store) (page page))
-  (cl-store:store
-   (data page)
-   (filename store)))
+;; (defmethod write-store ((store disk-store) (page page))
+;;   (cl-store:store
+;;    (data page)
+;;    (filename store)))
 
 (defclass memory-store (store)
   ((data :accessor data :initform nil :initarg :data))
