@@ -33,7 +33,7 @@
 
 (ql:quickload '(;:cl-store
                 :alexandria
-
+                :anaphora
                 :local-time
                 :metabang-bind
                 :cl-containers))
@@ -41,16 +41,18 @@
 (defpackage clink
   (:use
    :common-lisp
-
    :alexandria
    :anaphora
    :metabang-bind
-   :local-time
-   :cl-containers)
+   :local-time)
+  ;; TBD.
   (:export ))
 
 (in-package :clink)
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Debug & utility functions
 (defparameter *debug* nil "Set to enable debug logging to *debug-stream*")
 (defparameter *debug-stream* t "Print to this stream")
 
@@ -64,6 +66,18 @@
   `(let ((*debug* t))
      ,@body))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Generic functions that are common across the different classes in clink.
+
+(defgeneric size (object)
+  (:documentation "The size of the object. Typically, it will count up
+  the number of elements"))
+
+(defgeneric equalg (a b)
+  (:documentation "Generic equality function. Long-term, rename and rewrite to
+  conform to CDR 8"))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defclass header ()
   ((canonical-name
     :reader canonical-name
@@ -122,10 +136,6 @@
 (defmethod thing-to-header ((header header) (candidate number))
   (when (= (canonical-index header) candidate)
     header))
-
-(defgeneric equalg (a b)
-  (:documentation "Generic equality function. Long-term, rename and rewrite to
-  conform to CDR 8"))
 
 (defmethod equalg ((a header) (b header))
   (and
@@ -327,6 +337,7 @@
   (with-slots (data)
       page
     (unless data
+      ;; TODO: This function is 100% ded.
       (load-page page)))
   page)
 
@@ -1347,9 +1358,6 @@ returnable.
 And finally, a cell should be denotable by a combination row and
 column. Cells can be implemented with an alist `((:row ,r) (:column
 ,c))
-
-
-
 "))
 
 
@@ -1360,7 +1368,7 @@ column. Cells can be implemented with an alist `((:row ,r) (:column
 
 (defmethod ref ((table table) (header header) item)
   (let ((it
-          (oid-of (index header) item)))
+          (oid-of table (index header) item)))
     (when it
       (item-at table it))))
 
