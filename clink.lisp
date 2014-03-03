@@ -43,6 +43,7 @@
    :common-lisp
    :alexandria
    :anaphora
+   :fiveam                              ;used in clink-tests.lisp
    :metabang-bind
    :local-time)
   ;; TBD.
@@ -116,24 +117,35 @@
     :initarg :datatype
     :documentation "Datatype known for the column. If this is not
     known at time of request, nil is returned."))
-  (:documentation "Header object: it describes the names of
-  a column, as well as the actual index of said column. In part,
-  headers also define the metadata for a given column."))
+  (:documentation "Header object: it describes the names of a column,
+  as well as the actual index of said column. In part, headers also
+  define the metadata for a given column.
 
-(defgeneric thing-to-header (header candidate)
+Postconditions on creation: canonical index is legit"))
+
+(defmethod initialize-instance :after ((header header) &key)
+  (unless (>= (canonical-index header) 0)
+    (error "The canonical index for ~a must be non-zero: set to ~a"
+           header
+           (canonical-index header))))
+
+(defgeneric thing-to-header-p (header candidate)
   (:documentation "Evaluate `candidate` to see if it could be resolved
   to the `header` object passed in"))
 
-(defmethod thing-to-header ((header header) (candidate string))
+(defmethod thing-to-header-p ((header header) (candidate string))
   (if (string= (canonical-name header) candidate)
       header
       (loop for alias in (alias-list header)
             do
                (when
                    (string= candidate alias)
-                 (return-from thing-to-header header)))))
+                 (return-from thing-to-header-p header)))))
 
-(defmethod thing-to-header ((header header) (candidate number))
+(defmethod thing-to-header-p ((header header) (candidate symbol))
+  ())
+
+(defmethod thing-to-header-p ((header header) (candidate number))
   (when (= (canonical-index header) candidate)
     header))
 
@@ -198,6 +210,10 @@
   (setf (data-count obj) (first (array-dimensions (data obj)))))
 
 (defun things-to-headers (thing-list)
+  "things in `thing-list` must be strings or numbers; if not either, an error is
+raised.
+
+A list of headers is returned"
   (loop
     for h in thing-list
     for i from 0
@@ -431,15 +447,16 @@
     :initform 0)
 
    ;; This cache data structure ain't working out.
+   ;; TODO: understand this comment...
    (members
     :accessor members
     :initform (cl-containers:make-container 'cl-containers:heap-container)
     :initarg :members
     :documentation "Elements should conform to cachable-item")
    (test
-       :accessor test
-     :initform #'eql
-     :initarg :test)
+    :accessor testing
+    :initform #'eql
+    :initarg :test)
    (cache-overflow-p
     :accessor cache-overflow-p
     :initform #'(lambda (self) (> (size self) 32))
@@ -797,7 +814,7 @@ the state and returns to the calling iteration state."
   (let ((headers (headers table)))
     (loop for h in headers
           do
-          (when (thing-to-header h candidate)
+          (when (thing-to-header-p h candidate)
             (return-from find-canonical-header h)))))
 
 ;; This method name is bad. It actually creates an index on the
