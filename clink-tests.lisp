@@ -32,24 +32,22 @@
 (in-package :clink)
 
 
-(defun check (testform ))
-
 (defun check-headers-test ()
   ;; Can we get at the important information?
   (let ((header (make-instance 'header
                                :canonical-name "Column 0"
                                :canonical-index 0)))
-    (assert (string= (canonical-name header)
+    (checker:check (string= (canonical-name header)
                      "Column 0"))
-    (assert (= (canonical-index header)
+    (checker:check (= (canonical-index header)
                0)))
 
-  ;; Can we test equality and have it come out correctly?
+  ;; Can we check equality and have it come out correctly?
   (let ((header (make-instance 'header
                                :canonical-name "Column 0"
                                :canonical-index 0)))
 
-    (assert (eq (equalg header header) t)))
+    (checker:check (eq (equalg header header) t)))
 
   ;; Can we use the helper function things-to-headers correctly?
   (let ((header-one (make-instance 'header
@@ -61,29 +59,65 @@
         (headers
          (things-to-headers '("id" "name"))))
 
-    (assert (equalg (first headers) header-one))
-    (assert (equalg (second headers) header-two)))
+    (checker:check (equalg (first headers) header-one))
+    (checker:check (equalg (second headers) header-two)))
 
   ;; Header ~ string mapping
   (let ((header (make-instance 'header
                                    :canonical-name "id"
                                    :canonical-index 0)))
 
-    (assert (equalg header "id"))
-    (assert (equalg "id" header)))
+    (checker:check (equalg header "id"))
+    (checker:check (equalg "id" header)))
 
   (let ((header (make-instance 'header
                                :canonical-name "id"
                                :canonical-index 30
                                :alias-list
                                '("identity" "ID" :id 'ID))))
-    (assert (thing-to-header-p header "id"))
-    (assert (thing-to-header-p header 30))
-    (assert (thing-to-header-p header "ID"))
-    (assert (thing-to-header-p header "identity"))
-    ; (assert (thing-to-header-p header 'ID))
-    ; (assert (thing-to-header-p header :id))
-    ))
+    (checker:check (thing-to-header-p header "id"))
+    (checker:check (thing-to-header-p header 30))
+    (checker:check (thing-to-header-p header "ID"))
+    (checker:check (thing-to-header-p header "identity"))
+    (checker:check (thing-to-header-p header 'ID))
+    (checker:check (thing-to-header-p header :id)))
+
+  (let* (
+         (header-one (make-instance 'header
+                                   :canonical-name "id"
+                                   :canonical-index 0))
+         (header-two (make-instance 'header
+                                   :canonical-name "name0"
+                                   :canonical-index 1))
+         (header-three (make-instance 'header
+                                   :canonical-name "name1"
+                                   :canonical-index 2))
+         (header-four (make-instance 'header
+                                    :canonical-name "name2"
+                                    :canonical-index 3))
+         (header-five (make-instance 'header
+                                   :canonical-name "name3"
+                                   :canonical-index 4))
+         (header-list-a
+           (list header-one header-two header-three))
+         (header-list-b
+           (list header-four header-five)))
+
+    (checker:check (equal-headers header-list-a header-list-a))
+    (checker:check (not (equal-headers header-list-a header-list-b)))
+    (checker:check (not (equal-headers header-list-b header-list-a)))))
+
+(defmethod checker:run-checker-tests ((specializer (eql :clink-headers)))
+  (check-headers-test))
+
+(defun check-data-frame ()
+  (checker:check (make-instance 'data-frame))
+  (checker:check (= 0 (width (make-instance 'data-frame)))))
+
+(defmethod checker:run-checker-tests ((specializer (eql :data-frame)))
+  (check-data-frame))
 
 (defun run-tests ()
-  (check-headers-test))
+  (checker:run-checker-tests :clink-headers)
+  (checker:run-checker-tests :data-frame)
+  t)

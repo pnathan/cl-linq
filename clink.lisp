@@ -31,23 +31,22 @@
 ;;;; streaming datasets and queries.
 ;;;;
 
-(ql:quickload '(;:cl-store
-                :alexandria
-                :anaphora
-                :local-time
-                :metabang-bind
-                :cl-containers))
+;; (ql:quickload '(;:cl-store
+;;                 :alexandria
+;;                 :anaphora
+;;                 :local-time
+;;                 :metabang-bind
+;;                 :cl-containers))
 
 (defpackage clink
   (:use
    :common-lisp
    :alexandria
    :anaphora
-   :fiveam                              ;used in clink-tests.lisp
    :metabang-bind
    :local-time)
   ;; TBD.
-  (:export ))
+  (:export :run-tests ))
 
 (in-package :clink)
 

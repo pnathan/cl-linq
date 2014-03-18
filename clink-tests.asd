@@ -1,6 +1,6 @@
 (asdf:defsystem #:clink-tests
   :depends-on ( #:clink
-                #:fiveam)
+                #:checker)
   :components ((:file "clink-tests"))
   :name "clink-tests"
   :version "0.1"

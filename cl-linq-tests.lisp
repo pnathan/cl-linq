@@ -1,7 +1,7 @@
 (defpackage :cl-linq-tests
   (:use
    :common-lisp
-   :fiveam
+   :checker
    :cl-linq)
   (:export
    #:run-tests))
