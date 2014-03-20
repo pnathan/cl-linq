@@ -45,8 +45,13 @@
    :anaphora
    :metabang-bind
    :local-time)
-  ;; TBD.
-  (:export :run-tests ))
+
+  (:export
+
+   #:data-frame
+   #:cast-to-data-frame-ready-object
+
+   :run-tests ))
 
 (in-package :clink)
 
@@ -182,7 +187,7 @@ Postconditions on creation: canonical index is legit"))
     in the data")
    (data
     :accessor data
-    :initform (make-array '(2) :adjustable t :fill-pointer 0)
+    :initform nil
     :initarg :data
     :documentation "A remark on the data format. The `data-frame` is
     designed to be used as part of a data system with indexes applied
@@ -235,20 +240,29 @@ A list of headers is returned"
     (setf headers
           (things-to-headers new-headers))))
 
-(defgeneric cast-to-vector (source-object)
-  (:documentation "Builds an array of arrays from source-object and returns
-  the data and the number of rows thereof "))
+(defgeneric cast-to-data-frame-ready-object (source-object)
+  (:documentation "Builds an array of arrays from source-object and
+  returns the data and the number of rows thereof as multiple
+  values. Override this to import data objects into the CLINK
+  system."))
 
 (defmethod initialize-instance :after ((obj data-frame)  &key)
   (multiple-value-bind (data length)
-      (cast-to-vector (data obj))
+      (cast-to-data-frame-ready-object (data obj))
     (setf (data obj) data)
     (setf (data-count obj) length)))
 
 ;; Assumes a simple data form - not an alist, plist, or hash table.
 (defun make-data-frame (data &optional headers)
+  "Creates and returns a data frame from data, using cast-to-data-frame-ready-object as
+the underlying source, matching the data with the specified headers,
+if any. If headers are not specified, an integer is automatically
+generated."
   (let ((obj (make-instance 'data-frame
                             :data data)))
+
+    ;; TODO: validate width of data is width of headers.
+
     (setf (headers obj)
           (if headers
               headers
@@ -256,10 +270,10 @@ A list of headers is returned"
                     collect i)))
     obj))
 
-(defmethod cast-to-vector ((obj data-frame))
+(defmethod cast-to-data-frame-ready-object ((obj data-frame))
   (values (data obj) (lengthg obj)))
 
-(defmethod cast-to-vector ((list list))
+(defmethod cast-to-data-frame-ready-object ((list list))
   "This presumes that `list` is two dimensions."
   (let* ((length (length list))
          (data
@@ -274,9 +288,47 @@ A list of headers is returned"
          (setf (aref data i) (concatenate 'vector row)))
     (values data length)))
 
-(defmethod cast-to-vector ((array array))
-  (values array (array-dimension array 0)))
+(defmethod cast-to-data-frame-ready-object ((vector vector))
+  "Assume that vector has a concatanable set of elements within in"
+  (let* ((length (length vector))
+         (data
+           (make-array
+            (list length)
+            :adjustable t
+            :fill-pointer length)))
+    (loop
+      for row across vector
+      for i from 0
+      do
+         (setf (aref data i) (concatenate 'vector row)))
+    (values data length)))
 
+(defmethod cast-to-data-frame-ready-object ((array array))
+  (unless (= (array-dimension array 0) 2)
+    (error "array must be 2D"))
+
+  (flet ((array-slice (arr row)
+           ;; http://stackoverflow.com/a/12327524/26227
+           (make-array (array-dimension arr 1)
+                       :displaced-to arr
+                       :displaced-index-offset (* row (array-dimension arr 1)))))
+
+    (let* ((length (array-dimension array 0))
+           (data
+             (make-array
+              (list length)
+              :adjustable t
+              :fill-pointer length)))
+     (loop
+       for row-index from 0 below length
+       for i from 0
+       do
+          (setf (aref data i)
+                (array-slice array i)))
+     (values data length)))
+  )
+
+(defgeneric cutout-clone (frame))
 (defmethod cutout-clone ((frame data-frame))
   "A \"cutout\" clone of the data frame, with the same headers and
   width, but without the data."
@@ -284,6 +336,7 @@ A list of headers is returned"
                  :headers (headers frame)
                  :width (width frame)))
 
+;; a hugely inefficient method of adding data to the frame.
 (defmethod insert ((frame data-frame) (row vector) &key )
   (vector-push-extend row (data frame))
   (incf (data-count frame))

@@ -112,10 +112,54 @@
 
 (defun check-data-frame ()
   (checker:check (make-instance 'data-frame))
-  (checker:check (= 0 (width (make-instance 'data-frame)))))
+  (checker:check (= 0 (width (make-instance 'data-frame))))
+
+  (checker:check (make-data-frame '((0 :jim :ramses) (1 :jane :ramses))))
+
+  ;; metadata validation
+  (let ((frame (make-data-frame
+                               '((0 :jim :ramses)
+                                 (1 :jane :ramses)
+                                 (2 :joan :tut)
+                                 (3 :frank :tut)))))
+    (checker:check (eql (width frame) 3))
+    (checker:check (eql (lengthg frame) 4))
+    (checker:check (eql (data-count frame) 4))
+    (loop for header in (headers frame)
+          for i from 0
+          do
+             (checker:check (= (canonical-index header) i))
+             (checker:check (string= (canonical-name header) (format nil "~a" i))))))
+
+
+
+
+(defun check-casting-to-data-frame ()
+  (checker:check (let ((data  #(#(0 :JIM :RAMSES) #(1 :JANE :RAMSES)))
+                       (frame (make-data-frame '((0 :jim :ramses) (1 :jane :ramses)))))
+                   (equalp data
+                           (data frame))))
+  (checker:check (let* ((frame (make-data-frame '((0 :jim :ramses) (1 :jane :ramses))))
+                        (frame2 (make-data-frame frame)))
+                   (equalp  #(#(0 :JIM :RAMSES) #(1 :JANE :RAMSES))
+                            (data frame2))))
+
+  (checker:check (let* ((data #(#(0 :JIM :RAMSES) #(1 :JANE :RAMSES)))
+                        (frame (make-data-frame data)))
+                   (equalp data
+                           (data frame))))
+
+  (checker:check (let ((frame (make-instance 'data-frame
+                                             :data #2A((0 :jim :ramses) (1 :jane :ramses)))))
+                   (equalp #(#(0 :JIM :RAMSES) #(1 :JANE :RAMSES))
+                           (data frame))))
+  (checker:check (let ((frame (make-data-frame #2A((0 :jim :ramses) (1 :jane :ramses)))))
+                   (equalp #(#(0 :JIM :RAMSES) #(1 :JANE :RAMSES))
+                           (data frame)))))
 
 (defmethod checker:run-checker-tests ((specializer (eql :data-frame)))
-  (check-data-frame))
+  (check-data-frame)
+  (check-casting-to-data-frame))
 
 (defun run-tests ()
   (checker:run-checker-tests :clink-headers)
