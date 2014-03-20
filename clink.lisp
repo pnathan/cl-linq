@@ -343,7 +343,7 @@ generated."
   frame)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Backing store
+;;; Backing store, an abstract class
 (defclass store ()
   ()
   (:documentation "A store is a generalized resource locator, suitable
@@ -405,8 +405,7 @@ generated."
   (with-slots (data)
       page
     (unless data
-      ;; TODO: This function is 100% ded.
-      (load-page page)))
+      (load-item page)))
   page)
 
 (defmethod data :before ((page page))
@@ -414,17 +413,20 @@ generated."
   (ensure-data page))
 
 (defmethod data :around ((page page))
-
+  "Wrap around the data frame and return the underlying data"
   (let ((result (call-next-method)))
     (when result
       (data result))))
 
 (defmethod data-frame ((page page))
+  "Returns the raw data-frame that page uses"
   (with-slots (data)
       page
     data))
 
 (defmethod (setf data-frame) (new-value (page page))
+  "Set the data-frame to `new-value`, then return the data-frame
+object."
   (setf (data page) new-value)
   (data-frame page))
 
@@ -445,25 +447,21 @@ generated."
       (error "Data missing")))
 
 (defmethod unload-item  ((page page))
+  "Remove data from page"
   (with-slots (data) page
     (setf data nil)))
 
 (defmethod load-item ((page page))
+  "Loads item from the backing store"
   (setf (data page)
         (data (backing-store page))))
 
 (defmethod flush-item ((page page))
-  (setf (data (backing-store page)) page))
+  "Writes to the backing store"
+  (setf (data (backing-store page)) (data page)))
 
 (defmethod headers ((page page))
   (headers (data-frame page)))
-
-(defun make-page (backing-store &optional data (headers nil))
-  (let ((obj (make-instance 'caching-page :backing-store backing-store)))
-    (when data
-      (setf (data obj)
-            (make-data-frame data headers)))
-    obj))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; The caching logic manages loading and unloading in reasonably smart ways.
@@ -509,6 +507,7 @@ generated."
     :accessor testing
     :initform #'eql
     :initarg :test)
+
    (cache-overflow-p
     :accessor cache-overflow-p
     :initform #'(lambda (self) (> (size self) 32))
@@ -590,6 +589,7 @@ generated."
   (error "The generic cache isn't working out too well (some bugs got
   in the hacker's head and left a few holes). Advise using LRU-CACHE..."))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; LRU performs well on hot data.
 (defclass lru-cache (cache)
   ((members
@@ -643,7 +643,7 @@ generated."
                  :test #'eql))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; The page of the caching.
+;;; Page that manages caching according to the caching policy in *page-cache*
 (defclass caching-page (page cachable-item)
   ()
   (:documentation "This serves as the apex of the page management plus
@@ -668,6 +668,13 @@ dropping it from memory."
   "Flushes the currently cached pages out to the backing store."
   (loop for page in *page-cache*
         do (flush-item page)))
+
+(defun make-page (backing-store &optional data (headers nil))
+  (let ((obj (make-instance 'caching-page :backing-store backing-store)))
+    (when data
+      (setf (data obj)
+            (make-data-frame data headers)))
+    obj))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Different backing stores.
