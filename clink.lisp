@@ -1018,6 +1018,8 @@ new singular page). A *very* bad idea for large data sets."
 ;;;; X > Y && X < Z will fall into this area. Note that Y can be -inf
 ;;;; and Z +inf.
 
+
+;;; A range tree actually is a structure containing rows.
 (defclass range-tree ()
   ((root
     :accessor root
@@ -1025,48 +1027,46 @@ new singular page). A *very* bad idea for large data sets."
     :initarg :root
     :documentation "Root node of the range tree. Nil implies
     uninitialized.")
+   (key-of
+    :accessor key-of
+    :initform (error "A key function must be supplied")
+    :initarg :key-of
+    :documentation "The key function to pick out the value from the
+    tuple-space the tree covers")
    (comparator
     :accessor comparator
     :initform #'>
     :initarg :comparator
-    :documentation "Compares elements. Must be isomorphic to Z. ")
+    :documentation "Compares resulting values from key-of for
+    greater-than-ness. Must be isomorphic to Z. ")
    (equality
     :accessor equality
     :initform #'=
     :initarg :comparator
-    :documentation "Compares elements. Must be isomorphic to Z. "))
-
-
+    :documentation "Compares resulting values from key-of for
+    equality. Must be isomorphic to Z. "))
   (:documentation "A data structure useful for indexing & building
   sargable queries (https://en.wikipedia.org/wiki/Sargable). I.e.,
   select * from table where key > foo and key < bar => range query."))
+
+(defmethod print-object ((object range-tree) stream)
+  (print-unreadable-object (object stream :type t :identity t)
+    (format stream "key ~a, est. size, ~a" (key-of object) (lengthg object))))
+
+(defmethod lengthg ((tree range-tree))
+  nil)
 
 (defclass range-tree-node ()
   ((tree
     :accessor tree
     :initform nil
     :initarg :tree
-    :documentation "A node knows where it lives.")
-   (key
-    :accessor key
-    :initform (error "A key must be supplied to the node")
-    :initarg :key
-    :documentation "The value that is compared against.")
+    :documentation "A node knows where it lives - in the tree.")
    (data
     :accessor data
     :initform nil
     :initarg :data
     :documentation "The actual data (row) of the node.")
-   ;; (next
-   ;;  :accessor next
-   ;;  :initform nil
-   ;;  :initarg :next
-   ;;  :documentation "If set, the next node in the leaf list")
-   ;; (previous
-   ;;  :accessor previous
-   ;;  :initform nil
-   ;;  :initarg :previous
-   ;;  :documentation "If set, the previous node in the leaf list")
    (parent
     :accessor parent
     :initform nil
@@ -1083,49 +1083,62 @@ new singular page). A *very* bad idea for large data sets."
     :initarg :right
     :documentation "The right node. Nil for leaf nodes")))
 
+(defmethod print-object ((object range-tree-node) stream)
+  (print-unreadable-object (object stream :type t :identity t)
+    (format stream "data ~a, parent ~a, left ~a, right ~a"
+            (data object)
+            (parent object)
+            (left object)
+            (right object))))
+
 ;; (defmethod leaf-p ((node range-tree-node))
 ;;   (not (or (left node) (right node) (key node))))
 
-(defun make-range-tree (comparator &optional data)
-  (assert (functionp comparator))
+(defun make-range-tree (key &optional data)
+  (assert (functionp key))
   (let ((tree
           (make-instance 'range-tree
-                         :comparator comparator)))
+                         :key key)))
     (if data
         (insert tree data)
         tree)))
 
-(defmethod insert ((tree range-tree) key &key data)
+(defmethod insert ((tree range-tree) data)
   (let ((temp (root tree)))
     (if temp
-        (insert temp key :data data)
+        (insert temp data)
+
         (setf (root tree)
               (make-instance 'range-tree-node
-                             :key key
                              :tree tree
                              :data data))))
+  ;; return the tree
   tree)
 
-(defmacro new-node (parent-node node-form key data)
+(defmacro new-node (parent-node node-form data)
+  "Upsert `node-form` into `parent-node` using `data`. The new node
+will be returned."
   (let ((node-name (gensym)))
     `(let ((,node-name ,node-form))
-      (if ,node-name
-          (insert ,node-form ,key :data ,data)
-          (setf ,node-form
-                (make-instance
-                 'range-tree-node
-                 :key ,key
-                 :data ,data
-                 :parent ,parent-node
-                 :tree (tree ,parent-node)))))))
+       (if ,node-name
+           (insert ,node-form ,data)
+           (setf ,node-form
+                 (make-instance
+                  'range-tree-node
+                  :data ,data
+                  :parent ,parent-node
+                  :tree (tree ,parent-node)))))))
 
-;; inserts with standard binary search tree insertion approach. Data
-;; is stored in-node.
-(defmethod insert ((node range-tree-node) key &key data)
-  (if (funcall (comparator (tree node)) (key node) key)
-      (new-node node (left node) key data)
-      (new-node node (right node) key data))
-  node)
+
+(defmethod insert ((node range-tree-node) data)
+  "Inserts with standard binary search tree insertion approach. Data
+ is stored in-node. Returns the inserted node."
+  ;; compare
+  (if (funcall (comparator (tree node))
+               (funcall (key-of (tree node)) (data node))
+               (funcall (key-of (tree node)) data))
+      (new-node node (left node) data)
+      (new-node node (right node) data)))
 
 
 (defgeneric map-over (container funcallable-for-node &key)
