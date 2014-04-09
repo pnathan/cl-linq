@@ -31,12 +31,12 @@
 ;;;; streaming datasets and queries.
 ;;;;
 
-;; (ql:quickload '(;:cl-store
-;;                 :alexandria
-;;                 :anaphora
-;;                 :local-time
-;;                 :metabang-bind
-;;                 :cl-containers))
+(ql:quickload '(;:cl-store
+                :alexandria
+                :anaphora
+                :local-time
+                :metabang-bind
+                :cl-containers))
 
 (defpackage clink
   (:use
@@ -44,7 +44,8 @@
    :alexandria
    :anaphora
    :metabang-bind
-   :local-time)
+   :local-time
+   :iterable)
 
   (:export
 
@@ -54,7 +55,6 @@
    :run-tests ))
 
 (in-package :clink)
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Debug & utility functions
@@ -100,6 +100,8 @@
     :initform nil
     :documentation "These are the values can also refer to the
     header.")
+   ;; TODO: rename. Index as in array accessor and index as in db
+   ;; index overload semantic meaning of index.
    (index
     :accessor index
     :initform nil
@@ -126,6 +128,13 @@
   define the metadata for a given column.
 
 Postconditions on creation: canonical index is legit"))
+
+(defmethod print-object ((header header) stream)
+    (print-unreadable-object (header stream :type t :identity t)
+      (format stream "name: ~a index: ~a type: ~a"
+              (canonical-name header)
+              (canonical-index header)
+              (datatype header))))
 
 (defmethod initialize-instance :after ((header header) &key)
   (unless (>= (canonical-index header) 0)
@@ -204,6 +213,12 @@ Postconditions on creation: canonical index is legit"))
   (:documentation "A dataframe is the data + metadata for a given
   page."))
 
+(defmethod initialize-instance :after ((obj data-frame)  &key)
+  (multiple-value-bind (data length)
+      (cast-to-data-frame-ready-object (data obj))
+    (setf (data obj) data)
+    (setf (data-count obj) length)))
+
 (defmethod width ((obj data-frame))
   (length (headers obj)))
 
@@ -245,12 +260,6 @@ A list of headers is returned"
   returns the data and the number of rows thereof as multiple
   values. Override this to import data objects into the CLINK
   system."))
-
-(defmethod initialize-instance :after ((obj data-frame)  &key)
-  (multiple-value-bind (data length)
-      (cast-to-data-frame-ready-object (data obj))
-    (setf (data obj) data)
-    (setf (data-count obj) length)))
 
 ;; Assumes a simple data form - not an alist, plist, or hash table.
 (defun make-data-frame (data &optional headers)
@@ -359,14 +368,14 @@ generated."
 ;;; reread the data if it is unloaded.
 
 (defclass page ()
-  ((first-index
-    :accessor first-key
+  ((first-oid
+    :accessor first-oid
     :initform nil
-    :initarg :first-key)
-   (last-key
-    :accessor last-key
+    :initarg :first-oid)
+   (last-oid
+    :accessor last-oid
     :initform nil
-    :initarg :last-key)
+    :initarg :last-oid)
    (locked-p
     :accessor locked-p
     :initform nil
@@ -384,9 +393,9 @@ generated."
     :accessor backing-store))
   (:documentation "A table has multiple pages. Each page has an actual
   backing object - i.e., a file on-disk. Pages are known by the range
-  of primary keys they contain, along with the actual data rows. A
-  page A page can unload its data frame on request, but requests to
-  read will cause a reload of the data frame."))
+  of oids they contain, along with the actual data rows. A page can
+  unload its data frame on request, but requests to read will cause a
+  reload of the data frame."))
 
 (defmethod initialize-instance :after ((page page) &key)
   (with-slots (data)
@@ -473,20 +482,44 @@ object."
     :initform nil)
    (cache
     :accessor cache
-    :initform nil))
+    :initform (error "A cachable item must have a cache set")
+    :initarg :cache
+    :documentation "The shared cache for everything of a given type"))
   (:documentation "The cachable item knows whether it is cached or
   not, and to which cache it belongs. Note that the current design only
-  allows for belonging to one cache"))
+  allows for belonging to one cache."))
 
-(defgeneric unload-item (item)
-  (:documentation "Unloads the internal backing data from memory"))
-
-(defgeneric flush-item (item)
-  (:documentation "A cachable item should occasionally flush to the
-  backing store in case it gets evicted"))
 
 (defgeneric load-item (item)
   (:documentation "Loads item from its cache"))
+
+(defgeneric unload-item (item)
+  (:documentation "Unloads the internal backing data from
+  memory. Synchronization with the cache is handled by :before
+  & :after methods. "))
+
+(defgeneric flush-item (item)
+  (:documentation "A cachable item should occasionally flush to the
+  backing store in case it gets evicted. "))
+
+(defmethod initialize-instance :after ((object cachable-item) &key)
+  "Automatically add the object to the cache on creation."
+  (add-to-cache object (cache object)))
+
+(defmethod unload-item :before ((object cachable-item))
+  "Safely ensure that object is written out to its backing store before
+dropping it from memory."
+  (flush-item object))
+
+(defmethod unload-item :after ((object cachable-item))
+  "After a object is unloaded (however that happens), remove it from the
+cache"
+  (remove-from-cache object (cache object)))
+
+(defmethod load-item :after ((object cachable-item))
+  "After a object is loaded, add it to the cache"
+  (add-to-cache object (cache object)))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Next up should be a tool to manage cache size automatically,
@@ -504,9 +537,9 @@ object."
     :initarg :members
     :documentation "Elements should conform to cachable-item")
    (test
-    :accessor testing
-    :initform #'eql
-    :initarg :test)
+       :accessor testing
+     :initform #'eql
+     :initarg :test)
 
    (cache-overflow-p
     :accessor cache-overflow-p
@@ -516,13 +549,11 @@ object."
   its members, knows how to compare the members, and knows how to
   determine if it is overflowing (and thus eviction time)"))
 
-;; This API is badly named.
-
-(defmethod note-cached ((item cachable-item) (cache cache))
+(defmethod set-cached ((item cachable-item) (cache cache))
   (setf (cache item) cache)
   (setf (cached item) t))
 
-(defmethod note-uncached ((item cachable-item) (cache cache))
+(defmethod set-uncached ((item cachable-item) (cache cache))
   (setf (cache item) nil)
   (setf (cached item) nil))
 
@@ -546,27 +577,34 @@ object."
 
 (defgeneric add-to-cache (item cache)
   (:documentation "add to cache calls insert-cache-item, which is
-  expected to be implemented for a given cache type, and also handles
+  expected to be implemented for a given cache type. Add- also handles
   general management of caches"))
+
 (defmethod add-to-cache ((item cachable-item) (cache cache))
   (insert-cache-item item cache)
-  (note-cached item cache)
+  (set-cached item cache)
   (incf (size cache)))
 
 (defgeneric remove-from-cache (item cache)
   (:documentation "Remove from cache calls delete-cache-item, which is
-  expected to be implemented for a given cache type, and also handles
+  expected to be implemented for a given cache type. Remove- also handles
   general management of caches"))
 (defmethod remove-from-cache ((item cachable-item) (cache cache))
   ;; This may already have been removed.
   (when (cached item)
     (delete-cache-item item cache)
-    (note-uncached item cache)
+    (set-uncached item cache)
     (decf (size cache))))
+
+(defmethod flush-item ((cache cache))
+  "Flushes the currently cached items out to the backing store."
+  (loop for item in cache
+        do (flush-item item)))
 
 (defgeneric evict-to-size (cache)
   (:documentation "Evict-to-size removes all overflowing members of cache
   based on evict-worst's choices."))
+
 (defmethod evict-to-size ((cache cache))
   (when (funcall (cache-overflow-p cache) cache)
     (loop until (not (funcall (cache-overflow-p cache) cache))
@@ -638,39 +676,27 @@ object."
 ;;; Future-proofing note: Don't make this a class variable. Really
 ;;; frustrating bugs relating to when the class instance was created
 ;;; cropped up.
+;;;
+;;; WAT. A Global for caching?
+;;;
+;;; Roughly, a cachable-item
 (defparameter *page-cache*
   (make-instance 'lru-cache
                  :test #'eql))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Page that manages caching according to the caching policy in *page-cache*
+;;; Page that manages caching according to the caching policy in
+;;; *page-cache*
 (defclass caching-page (page cachable-item)
   ()
-  (:documentation "This serves as the apex of the page management plus
-  the cachable-item mixin"))
-
-(defmethod initialize-instance :after ((page caching-page) &key)
-  "Automatically add the page to the cache on creation."
-  (add-to-cache page *page-cache*))
-
-(defmethod unload-item :before ((page caching-page))
-  "Safely ensure that page is written out to its backing store before
-dropping it from memory."
-  (flush-item page))
-
-(defmethod unload-page :after ((page caching-page))
-  (remove-from-cache page *page-cache*))
-
-(defmethod load-item :after ((page caching-page))
-  (add-to-cache page *page-cache*))
-
-(defmethod flush-item ((cache cache))
-  "Flushes the currently cached pages out to the backing store."
-  (loop for page in *page-cache*
-        do (flush-item page)))
+  (:documentation "Uses the cachable-item mixin to enable caching on a page"))
 
 (defun make-page (backing-store &optional data (headers nil))
-  (let ((obj (make-instance 'caching-page :backing-store backing-store)))
+  (let* ((cache (make-instance 'lru-cache
+                               :test #'eql))
+         (obj (make-instance 'caching-page
+                            :backing-store backing-store
+                            :cache cache)))
     (when data
       (setf (data obj)
             (make-data-frame data headers)))
@@ -753,74 +779,6 @@ intersect any other x0,x1 in the system"
         ((> key (second node))
          (find-nearest-key (third kd-tree) key))))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defclass iterable ()
-  ((finished-iterating
-    :accessor finished-iterating-p
-    :initform nil)
-   (current-iterator
-    :initform nil
-    :accessor current-iterator
-    :documentation "This is the current iterator's pointer"))
-  (:documentation "This class supports lazy iteration"))
-
-(defgeneric reset-iteration (seq)
-  (:documentation "Reset the current and future to the point of
-  root. Reset-iteration should not be destructive to the data stream;
-  see RESETTABLE-P to check."))
-
-(defmethod reset-iteration :before ((iterable iterable))
-  (setf (finished-iterating-p iterable) nil))
-
-(defgeneric resettable-p (iterable)
-  (:documentation "Is the iterable resettable? This should be t for
-  file and memory data structures; network based or stream data
-  structures should be nil. The default for the iterable hierarchy is t"))
-
-(defmethod resettable-p ((iterable iterable))
-  t)
-
-(defgeneric next (seq)
-  (:documentation "Set the iterable to the next item"))
-
-(defgeneric root (seq)
-  (:documentation "Head of the iterator"))
-
-(defgeneric current  (seq)
-  (:documentation "Value of the current iterator"))
-
-(defgeneric future (seq)
-  (:documentation "Stuff to come"))
-
-(defgeneric move (seq)
-  (:documentation "A stepper function; get data, move to the next
-  element. Returns the data gotten from current."))
-
-(defmethod move ((iter iterable))
-  (let ((data (current iter)))
-    (next iter)
-    data))
-
-(defmacro with-fresh-iteration ((iterator) &body body)
-  "Pushes the current iteration point and the finished iteration state
-and puts iterator into a start point state; completion or error pops
-the state and returns to the calling iteration state."
-  (let ((current-iteration (gensym))
-        (finished-iterating (gensym)))
-
-   `(let ((,current-iteration (current-iterator ,iterator))
-          (,finished-iterating (finished-iterating-p ,iterator)))
-
-      (unless (resettable-p ,iterator)
-          (error "~a is not resettable; fresh iterations not possible" ,iterator))
-
-      (reset-iteration ,iterator)
-      (unwind-protect
-           (progn
-             ,@body)
-        (setf (current-iterator ,iterator) ,current-iteration)
-        (setf (finished-iterating-p ,iterator) ,finished-iterating)))))
-
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -837,7 +795,9 @@ the state and returns to the calling iteration state."
     :accessor headers
     :initarg :headers)
    (current-iterator
-    :initform 0)
+    :initform 0
+    :documentation "The current-iterator is the current page loaded
+    into memory.")
    (unanalyzed
     :initform t
     :accessor unanalyzed
@@ -852,22 +812,28 @@ the state and returns to the calling iteration state."
     :accessor accesses-to-next-eviction
     :documentation "When this counter reaches zero, the cache eviction
     request is executed.")
-   (page-key-index
+   (page-oid-index
     :initform nil
-    :accessor page-key-index
+    :accessor page-oid-index
     :documentation "A tree indexing artifical keys (for access) into
-    pages. ")
-   (size
-    :initform nil
-    :accessor size)
+    pages. This is the approach to determine which row belongs
+    to which page.")
+
    (pages :initform (make-array '(2) :adjustable t :fill-pointer 0)
           :accessor pages))
   (:documentation "A table contains all rows of a given columnar
-    structure. This is done via the page mechanism. "))
+    structure. This is done via the page mechanism. `pages` is a
+    vector of all pages."))
 
 (defmethod initialize-instance :after ((table table) &key)
   (let ((given-headers (headers table)))
     (setf (headers table) (things-to-headers given-headers))))
+
+(defmethod print-object ((table table) stream)
+  "Prints an un-READable representation of table. This operation may
+cause an O(n) count of all rows in the worst possible scenario."
+    (print-unreadable-object (table stream :type t :identity t)
+      (format stream "size: ~a unanalyzed: ~a" (lengthg table) (unanalyzed table))))
 
 (defmethod find-canonical-header ((table table) candidate)
   (let ((headers (headers table)))
@@ -876,39 +842,27 @@ the state and returns to the calling iteration state."
           (when (thing-to-header-p h candidate)
             (return-from find-canonical-header h)))))
 
-;; This method name is bad. It actually creates an index on the
-;; synthetic keys tables have.
-(defmethod create-index-on-keys ((table table))
+(defmethod create-index-on-oids ((table table))
   (let ((index
           (k-d-tree
            (loop for page across (pages table)
                  nconc
-                 (list (list (first-key page) (last-key page) page))))))
-    (setf (page-key-index table) index)))
+                 (list (list (first-oid page)
+                             (last-oid page) page))))))
+    (setf (page-oid-index table) index)))
 
 (defmethod analyze-table ((table table))
   (let ((counter 0))
     (loop for page across (pages table)
           do
-             (setf (first-key page) counter)
-             (setf (last-key page) (1- (+ counter (lengthg page))))
+             (setf (first-oid page) counter)
+             (setf (last-oid page) (1- (+ counter (lengthg page))))
              (setf counter (+  counter (lengthg page)))))
-  (create-index-on-keys table)
+  (create-index-on-oids table)
   (setf (unanalyzed table) nil)
   t)
 
-(defmethod (setf root) (new-value (table table))
-  (error "Unable to set table's root"))
-
-(defmethod root ((table table))
-  ;; the root of table is actually the first page in pages
-  table)
-
-(defmethod reset-iteration ((table table))
-  (setf (current-iterator table) 0)
-  table)
-
-(defmethod page-key-index :before ((table table))
+(defmethod page-oid-index :before ((table table))
   (when (unanalyzed table)
     (analyze-table table)))
 
@@ -922,28 +876,47 @@ the state and returns to the calling iteration state."
         (flush-item page)))
 
 (defmethod current-page ((table table))
-  (find-nearest-key (page-key-index table) (current-iterator table)))
+  "Returns the current page"
+  (find-nearest-key (page-oid-index table)
+                    (current-iterator table)))
 
-(defmethod page-with ((table table) index)
-  (find-nearest-key (page-key-index table) index))
+(defmethod page-with ((table table) oid)
+  "Finds the page with `oid`"
+  (find-nearest-key (page-key-index table) oid))
 
-(defmethod item-at ((table table) (index number))
+(defmethod item-at ((table table) (oid number))
+  "Finds the item at `oid`"
   (let ((current-page
-          (page-with table index)))
+          (page-with table oid)))
 
     (elt (data current-page)
-         (- index (first-key current-page)))))
+         (- oid (first-key current-page)))))
 
-(defmethod item-at ((table table) (indicies vector))
-  (map 'vector #'(lambda (i) (item-at table i)) indicies))
+(defmethod item-at ((table table) (oids vector))
+  "Finds the vector of items with oids"
+  (map 'vector #'(lambda (i) (item-at table i)) oids))
 
-(defmethod item-at :after ((table table) (index number))
+(defmethod item-at :after ((table table) (oid number))
+  "After accessing an item, evict if we're up for it."
   (declare (ignore index))
   (decf (accesses-to-next-eviction table))
   (when (= (accesses-to-next-eviction table) 0)
     (evict-to-size (cache table))
     (setf (accesses-to-next-eviction table)
           (accesses-to-next-eviction-default table))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; seq protocol.
+(defmethod (setf root) (new-value (table table))
+  (error "Unable to set table's root"))
+
+(defmethod root ((table table))
+  ;; the root of table is actually the first page in pages
+  table)
+
+(defmethod reset-iteration ((table table))
+  (setf (current-iterator table) 0)
+  table)
 
 (defmethod current ((table table))
   (when (unanalyzed table)
@@ -954,10 +927,21 @@ the state and returns to the calling iteration state."
 
   (item-at table (current-iterator table)))
 
-(defmethod next ((table table))
+(defmethod skip ((table table) &optional (count 1))
+  ;; note that this is essentially a reverse limit n operation in
+  ;; pgsql
+  (error "Unimplemented")
+  ;; rough algorithm - find the oid of the count. Copy the page with
+  ;; the oid, trim up to the oid, and append the page to the following
+  ;; pages for the `pages` lot. Reindex the oids.
+  )
+
+(defmethod next! ((table table))
   (if (> (1- (lengthg table)) (current-iterator table) )
       (incf (current-iterator table))
       (setf (finished-iterating-p table) t)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defmethod lengthg ((table table))
   (loop for page across (pages table)
@@ -966,7 +950,7 @@ the state and returns to the calling iteration state."
 (defmethod data ((table table))
   "Collects all of the data in the pages and returns it as a single
 vector of vectors (suitable for putting into a new table or using as a
-new singular page). A very bad idea for large data sets."
+new singular page). A *very* bad idea for large data sets."
   (let ((retval (make-array '(2) :adjustable t :fill-pointer 0)))
 
     (loop for page across (pages table)
@@ -979,6 +963,10 @@ new singular page). A very bad idea for large data sets."
 (defmethod (setf data) (new-value (table table))
   (error "Unable to directly set the data on a table"))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Note that insertion into a table is not something to be exposed to
+;;; clients of this defsystem.  Data is surface immutable. New tables
+;;; are formed by some function against another function.
 (defmethod insertable-page ((table table))
   "Return the page that data can be inserted into."
   (aref (pages table) (1- (length (pages table)))))
@@ -1007,6 +995,8 @@ new singular page). A very bad idea for large data sets."
         do
         (insert table row)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (defparameter *foo* nil)
 (defun make-dummy-table ()
   (let ((table (make-instance 'table :headers '("0" "1" "2" "3"))))
@@ -1021,6 +1011,8 @@ new singular page). A very bad idea for large data sets."
     (analyze-table table)
     table))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Implementation of a range tree. This is used as the second
 ;;;; fundamental block of the index system. Any particular query where
 ;;;; X > Y && X < Z will fall into this area. Note that Y can be -inf
@@ -1497,9 +1489,12 @@ column. Cells can be implemented with an alist `((:row ,r) (:column
 (defmethod current ((seq list))
   (car seq))
 
-(defmethod future ((seq list))
-  (cdr seq))
+(defmethod skip ((seq list) &optional (count 1))
+  (when (and seq (>= count 0))
+    (if (= count 0)
+        seq
+        (skip (cdr seq) (1- count)))))
 
-(defmethod next ((seq list))
+(defmethod next! ((seq list))
   (setf (car seq) (cadr seq))
   (setf (cdr seq) (cddr seq)))

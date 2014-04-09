@@ -6,7 +6,9 @@
                 #:anaphora
                 #:local-time
                 #:metabang-bind
-                #:cl-containers)
+                #:cl-containers
+                ;; NOTE: this name may change over time.
+                #:iterable)
   :components ((:file "clink"))
   :name "clink"
   :version "0.1"
