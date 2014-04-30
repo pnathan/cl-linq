@@ -38,6 +38,8 @@
                 :metabang-bind
                 :cl-containers))
 
+(ql:quickload :iterable)
+
 (defpackage clink
   (:use
    :common-lisp
@@ -1018,7 +1020,7 @@ new singular page). A *very* bad idea for large data sets."
 ;;;; X > Y && X < Z will fall into this area. Note that Y can be -inf
 ;;;; and Z +inf.
 
-
+g
 ;;; A range tree actually is a structure containing rows.
 (defclass range-tree ()
   ((root
@@ -1027,6 +1029,10 @@ new singular page). A *very* bad idea for large data sets."
     :initarg :root
     :documentation "Root node of the range tree. Nil implies
     uninitialized.")
+   (size
+    :accessor lengthg
+    :initform 0
+    :documentation "The size of the range tree")
    (key-of
     :accessor key-of
     :initform (error "A key function must be supplied")
@@ -1052,9 +1058,6 @@ new singular page). A *very* bad idea for large data sets."
 (defmethod print-object ((object range-tree) stream)
   (print-unreadable-object (object stream :type t :identity t)
     (format stream "key ~a, est. size, ~a" (key-of object) (lengthg object))))
-
-(defmethod lengthg ((tree range-tree))
-  nil)
 
 (defclass range-tree-node ()
   ((tree
@@ -1085,11 +1088,24 @@ new singular page). A *very* bad idea for large data sets."
 
 (defmethod print-object ((object range-tree-node) stream)
   (print-unreadable-object (object stream :type t :identity t)
-    (format stream "data ~a, parent ~a, left ~a, right ~a"
+    (format stream "data ~a"
             (data object)
-            (parent object)
-            (left object)
-            (right object))))
+            )))
+
+(defmethod key-of ((node range-tree-node))
+  "Returns the key function for node"
+  (assert (tree node))
+  (key-of (tree node)))
+
+(defmethod key ((node range-tree-node))
+  "Calls the key function on node on the data in node"
+  (assert (tree node))
+  (funcall (key-of node) (data node)))
+
+(defmethod equalg ((node-a range-tree-node) (node-b range-tree-node))
+  (funcall (equality (tree node-a))
+           (key node-a)
+           (key node-b)))
 
 ;; (defmethod leaf-p ((node range-tree-node))
 ;;   (not (or (left node) (right node) (key node))))
@@ -1103,7 +1119,8 @@ new singular page). A *very* bad idea for large data sets."
         (insert tree data)
         tree)))
 
-(defmethod insert ((tree range-tree) data)
+(defmethod insert ((tree range-tree) data &key)
+  (incf (lengthg tree))
   (let ((temp (root tree)))
     (if temp
         (insert temp data)
@@ -1130,7 +1147,7 @@ will be returned."
                   :tree (tree ,parent-node)))))))
 
 
-(defmethod insert ((node range-tree-node) data)
+(defmethod insert ((node range-tree-node) data &key)
   "Inserts with standard binary search tree insertion approach. Data
  is stored in-node. Returns the inserted node."
   ;; compare
@@ -1160,7 +1177,12 @@ to children."
    (when (right node)
     (map-over (right node) func :level (1+ level)))))
 
-(defun find-range (top bottom node)
+(defun find-range (bottom top node)
+  "Finds all nodes between bottom and top, using the tree comparator"
+  ;; O(n) algorithm to find everything within range.
+
+  (unless (funcall (comparator (tree node)) top bottom)
+    (error "Please reorder your top and bottom"))
   (let ((result))
     ;; non-pruning implementation of a range find. O(n)
     (map-over node
@@ -1168,15 +1190,15 @@ to children."
                   (declare (ignore depth))
                   (when (and (>= (key node) bottom)
                              (< (key node) top))
-                    (push (key node) result))))
+
+                    (push node result))))
     result))
 
 (defun println (&rest args)
   (funcall #'format t "~&~A~%" args))
 
-(defmacro sure (condition &body body)
-  ;; Sure, it returns true when cond is not true.
-  ;; Sure, bro. Sure.
+(defmacro do-when (condition &body body)
+  "Do body when condition is true; returns t otherwise."
   (let ((result (gensym)))
     `(let ((,result ,condition))
        (cond (,result
@@ -1190,15 +1212,17 @@ to children."
         (right (when (right node)
                  (key (right node)))))
     (when (and (> cut-point key)
-               (sure left
+               (do-when left
                  (> cut-point left))
-               (sure right
+               (do-when right
                  (< cut-point right)))
         :yes)))
 
 (defun find-at-most-in-tree (node top)
   (labels ((finder (node top)
-             (if (funcall (comparator (tree node)) (key node) top)
+             (if (funcall (comparator (tree node))
+                          (key node)
+                          top)
                  (cond ((left node)
                         (finder (left node) top)))
                  (cond ((right node)
@@ -1206,14 +1230,46 @@ to children."
              (when (time-to-prune-p node top)
                 (return-from find-at-most-in-tree node))))
     (finder node top)))
+(defgeneric tree-printer (tree &key))
+(defmethod tree-printer ((tree range-tree) &key (depth 1))
+  (format t "~&~a~%"(with-output-to-string (stream)
+     (print-unreadable-object (tree stream :type t :identity t)
+       (format stream "key-of ~a,  comp ~a , equal ~a"
+               (key-of tree)
+               (comparator tree)
+               (equality tree)))))
+  (tree-printer (root tree) :depth (1+ depth)))
+
+(defmethod tree-printer ((node range-tree-node) &key (depth 0))
+  (when (left node)
+    (tree-printer (left node) :depth (1+ depth)))
+
+  (format t "~&~a~a~%"
+          (concatenate  'string (loop for i from 0 below depth collect #\Space))
+          (with-output-to-string (stream)
+
+     (print-unreadable-object (node stream :type t :identity t)
+       (format stream "data: ~a"
+               (data node)))))
+  (when (right node)
+      (tree-printer (right node) :depth (1+ depth))))
 
 (defun find-range-in-tree (node bottom top)
   "[bottom, top)"
+
   (assert node)
+  (unless (funcall (comparator (tree node)) top bottom)
+    (error "Please reorder your top and bottom"))
+
   (let ((top-node (find-at-most-in-tree node top)))
     (loop
       for prev = top-node then (find-predecessor prev)
-      until (< (key prev) bottom)
+      until (funcall (comparator (tree node))
+                     bottom
+                     (key prev))
+      do
+         (format t "~&~a~%" prev)
+         (format t "~&~a~%" (find-predecessor prev))
       collect prev)))
 
 (defmethod leaf-p ((node range-tree-node))
@@ -1249,20 +1305,24 @@ to children."
       (find-minimum (right node))
       (find-left-motion node)))
 
+;; TODO: find-*-motion could probably be a macro expanding both out.
 ;; The find-*-motions attempt to find the next "leftmost" or
 ;; "rightmost" node.
 
 (defun find-left-motion (node)
   (if (parent node)
-      (if (funcall (equality (tree node)) (left (parent node)) node)
+      (if (equalg
+           (left (parent node))
+           node)
           (parent node)
           (find-left-motion (parent node)))
       nil))
 
 (defun find-right-motion (node)
   (if (parent node)
-      (if (funcall (equality (tree node))
-                   (right (parent node)) node)
+      (if (equalg
+           (right (parent node))
+           node)
           (find-right-motion (parent node))
           (parent node))
       nil))
