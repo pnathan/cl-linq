@@ -73,6 +73,22 @@
   `(let ((*debug* t))
      ,@body))
 
+(defun lg (value)
+  "Log base 2"
+  (/ (log value)
+     (log 2)))
+
+(defun println (&rest args)
+  "Prints args in a line"
+  (funcall #'format t "~&~A~%" args))
+
+(defmacro do-when (condition &body body)
+  "Do body when condition is true; returns t otherwise."
+  (let ((result (gensym)))
+    `(let ((,result ,condition))
+       (cond (,result
+              ,@body)
+             (t t)))))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Generic functions that are common across the different classes in clink.
 
@@ -791,7 +807,7 @@ intersect any other x0,x1 in the system"
 ;;; intended use pattern is a load->analyze->new-table->new-analysis
 ;;; pipeline.
 
-(defclass table (iterable)
+(defclass table (iterable:iterable)
   ((headers
     :initform nil
     :accessor headers
@@ -884,7 +900,7 @@ cause an O(n) count of all rows in the worst possible scenario."
 
 (defmethod page-with ((table table) oid)
   "Finds the page with `oid`"
-  (find-nearest-key (page-key-index table) oid))
+  (find-nearest-key (page-oid-index table) oid))
 
 (defmethod item-at ((table table) (oid number))
   "Finds the item at `oid`"
@@ -892,7 +908,7 @@ cause an O(n) count of all rows in the worst possible scenario."
           (page-with table oid)))
 
     (elt (data current-page)
-         (- oid (first-key current-page)))))
+         (- oid (first-oid current-page)))))
 
 (defmethod item-at ((table table) (oids vector))
   "Finds the vector of items with oids"
@@ -1020,8 +1036,6 @@ new singular page). A *very* bad idea for large data sets."
 ;;;; X > Y && X < Z will fall into this area. Note that Y can be -inf
 ;;;; and Z +inf.
 
-g
-;;; A range tree actually is a structure containing rows.
 (defclass range-tree ()
   ((root
     :accessor root
@@ -1086,6 +1100,97 @@ g
     :initarg :right
     :documentation "The right node. Nil for leaf nodes")))
 
+(defmethod tree-to-vine ((root range-tree-node))
+  (let (vine-tail
+        remainder
+        tempptr)
+    (setf vine-tail root)
+    (setf remainder (right vine-tail))
+    (let ((size 0))
+      (loop while remainder
+            do
+               (cond
+                 ;; move vine-tail down one
+                 ((not (left remainder))
+                  (setf vine-tail remainder)
+                  (setf remainder (right remainder))
+                  (incf size))
+                 ;; rotate
+                 (t
+                  (setf tempptr (left remainder))
+                  (setf (left remainder) (right tempptr))
+                  (setf (right tempptr) remainder)
+                  (setf remainder tempptr)
+                  (setf (right vine-tail) tempptr))))
+      size)))
+
+(defun vine-to-tree (node size)
+  (labels ((compression (root count)
+             (let ((scanner root)
+                   child
+                   i)
+               (dotimes (i (1- count))
+                 (setf child (right scanner))
+                 (setf (right scanner) (right child))
+                 (setf scanner (right scanner))
+                 (setf (right child) (left scanner))
+                 (setf (left scanner) child)))))
+    (let ((leaf-count (- (+ size 1)
+                         (truncate (expt 2 (lg (1+ size)))))))
+      (compression node leaf-count)
+
+      (setf size (- size leaf-count))
+
+      (loop while (> size 1)
+            do
+               (compression node (truncate (/ size 2)))
+               (setf size (truncate (/ size 2)))))))
+
+(defun fix-up-parents-in-tree (node)
+  ;; O(n) algorithm to set all parents appropriately.
+  (when (left node)
+    (setf (parent (left node)) node)
+   (fix-up-parents-in-tree (left node)))
+
+  (when (right node)
+    (setf (parent (right node)) node)
+    (fix-up-parents-in-tree (right node))))
+
+(defmethod rebalance-tree ((tree range-tree))
+  ;; This is a mostly straightforward implenentation of: Stout,
+  ;; Warren, CACM, 1986
+  ;; http://web.eecs.umich.edu/~qstout/pap/CACM86.pdf
+  (let ((pseudo-root
+          (make-instance 'range-tree-node :right (root tree) )
+                                        ;(root tree)
+          ))
+    (let ((size
+            (tree-to-vine pseudo-root)))
+      (vine-to-tree pseudo-root size))
+
+    (setf (root tree) (right pseudo-root))
+    ;; TOTAL EPIC HACK INCOMING.  So the CACM paper doesn't fix up
+    ;; parents. Worse, I'm tired and sleepy and not currently willing
+    ;; to work through the tree linkages in the vine compression
+    ;; algorithm to get parents right. Consequently, I'm adding an
+    ;; O(n) traversal of the tree to deal with this. Bad hacker, no
+    ;; cookie. :-(
+    (progn
+      (fix-up-parents-in-tree (root tree))
+      (setf (parent (root tree)) nil))
+    tree))
+
+(defun recount-range-tree (tree)
+  (let ((counter 0))
+    (map-over tree
+              #'(lambda (node depth)
+                  (declare (ignore node depth))
+                  (incf counter)))
+    counter))
+
+(defmethod refresh-tree-size ((tree range-tree))
+  (setf (lengthg tree) (recount-range-tree tree)))
+
 (defmethod print-object ((object range-tree-node) stream)
   (print-unreadable-object (object stream :type t :identity t)
     (format stream "data ~a"
@@ -1102,19 +1207,26 @@ g
   (assert (tree node))
   (funcall (key-of node) (data node)))
 
+(defmethod comparator ((node range-tree-node))
+  (comparator (tree node)))
+
+(defmethod equality ((node range-tree-node))
+  (equality (tree node)))
+
 (defmethod equalg ((node-a range-tree-node) (node-b range-tree-node))
   (funcall (equality (tree node-a))
            (key node-a)
            (key node-b)))
 
-;; (defmethod leaf-p ((node range-tree-node))
-;;   (not (or (left node) (right node) (key node))))
+;; long past time to implement EQUALS
+(defmethod equalg ((x number) (y number))
+  (= x y))
 
 (defun make-range-tree (key &optional data)
   (assert (functionp key))
   (let ((tree
           (make-instance 'range-tree
-                         :key key)))
+                         :key-of key)))
     (if data
         (insert tree data)
         tree)))
@@ -1146,21 +1258,19 @@ will be returned."
                   :parent ,parent-node
                   :tree (tree ,parent-node)))))))
 
-
 (defmethod insert ((node range-tree-node) data &key)
   "Inserts with standard binary search tree insertion approach. Data
  is stored in-node. Returns the inserted node."
   ;; compare
   (if (funcall (comparator (tree node))
-               (funcall (key-of (tree node)) (data node))
+               (key node)
                (funcall (key-of (tree node)) data))
       (new-node node (left node) data)
       (new-node node (right node) data)))
 
-
 (defgeneric map-over (container funcallable-for-node &key)
   (:documentation "Maps over the elements of container, executing
-  funcallable on each of them."))
+  funcallable on each of them. Inherently O(n)"))
 
 (defmethod map-over ((tree range-tree) func &key)
   (when (root tree)
@@ -1168,16 +1278,17 @@ will be returned."
 
 (defmethod map-over ((node range-tree-node) func &key (level 1))
   "Pre-order call order of func on node and its children. Passes level
-to children."
-  (list
-   (funcall func node level)
+to children. O(n)"
+  (append
+   (list (funcall func node level))
    (when (left node)
      (map-over (left node) func :level (1+ level)))
 
    (when (right node)
-    (map-over (right node) func :level (1+ level)))))
+     (map-over (right node) func :level (1+ level)))))
 
-(defun find-range (bottom top node)
+
+(defun find-range-slowly (bottom top node)
   "Finds all nodes between bottom and top, using the tree comparator"
   ;; O(n) algorithm to find everything within range.
 
@@ -1194,42 +1305,28 @@ to children."
                     (push node result))))
     result))
 
-(defun println (&rest args)
-  (funcall #'format t "~&~A~%" args))
-
-(defmacro do-when (condition &body body)
-  "Do body when condition is true; returns t otherwise."
-  (let ((result (gensym)))
-    `(let ((,result ,condition))
-       (cond (,result
-              ,@body)
-             (t t)))))
-
-(defun time-to-prune-p (node cut-point)
-  (let ((key (key node))
-        (left (when (left node)
-                (key (left node))))
-        (right (when (right node)
-                 (key (right node)))))
-    (when (and (> cut-point key)
-               (do-when left
-                 (> cut-point left))
-               (do-when right
-                 (< cut-point right)))
-        :yes)))
 
 (defun find-at-most-in-tree (node top)
-  (labels ((finder (node top)
-             (if (funcall (comparator (tree node))
-                          (key node)
-                          top)
-                 (cond ((left node)
-                        (finder (left node) top)))
-                 (cond ((right node)
-                        (finder (right node) top))))
-             (when (time-to-prune-p node top)
-                (return-from find-at-most-in-tree node))))
-    (finder node top)))
+  "Precondition: balanced tree"
+  (let ((result
+          (cond
+            ((funcall (equality (tree node))
+                      (key node)
+                      top)
+             node)
+            ((funcall (comparator (tree node))
+                      (key node)
+                      top)
+             (when (left node)
+               (find-at-most-in-tree (left node) top)))
+            (t
+             (when (right node)
+               (find-at-most-in-tree (right node) top))))))
+    (if result
+        result
+        node)))
+
+
 (defgeneric tree-printer (tree &key))
 (defmethod tree-printer ((tree range-tree) &key (depth 1))
   (format t "~&~a~%"(with-output-to-string (stream)
@@ -1254,7 +1351,7 @@ to children."
   (when (right node)
       (tree-printer (right node) :depth (1+ depth))))
 
-(defun find-range-in-tree (node bottom top)
+(defun find-range (node bottom top)
   "[bottom, top)"
 
   (assert node)
@@ -1263,27 +1360,16 @@ to children."
 
   (let ((top-node (find-at-most-in-tree node top)))
     (loop
-      for prev = top-node then (find-predecessor prev)
-      until (funcall (comparator (tree node))
-                     bottom
-                     (key prev))
-      do
-         (format t "~&~a~%" prev)
-         (format t "~&~a~%" (find-predecessor prev))
+      for prev = top-node then (find-next-smallest prev)
+      until (or (not prev)
+                (funcall (comparator (tree node))
+                         bottom
+                         (key prev)))
       collect prev)))
 
 (defmethod leaf-p ((node range-tree-node))
   (not (or (left node)
             (right node))))
-
-(defgeneric find-minimum (node))
-(defmethod find-minimum ((node range-tree-node))
-  "Minimum is leftmost"
-  ;; We're at the end.
-  (if (or (leaf-p node)
-          (not (left node)))
-      node
-      (find-minimum (left node))))
 
 (defgeneric find-maximum (node))
 (defmethod find-maximum ((node range-tree-node))
@@ -1293,40 +1379,51 @@ to children."
       node
       (find-maximum (right node))))
 
-(defmethod find-predecessor ((node range-tree-node))
-  "Finds the closest node that's smaller than `node`"
+(defmethod find-node ((node range-tree-node) key-search-value)
+  (cond
+    ;; eq
+    ((equalg (key node) key-search-value)
+     node)
+    ((funcall (comparator node)
+              (key node)
+              key-search-value)
+     (when (left node)
+      (find-node (left node) key-search-value)))
+    (t
+     (when (right node)
+      (find-node (right node) key-search-value)))))
+
+(defmethod find-next-smallest ((node range-tree-node))
+  "Finds the next smallest node in the tree and returns it. If node is
+the smallest node in the tree, nil is returned.
+
+Algorithmically, the worst case is if node is on the left branch of
+parent and has no left children. This will incur a hit of
+O(distance-to-root) pointer traversals."
   (if (left node)
-      (find-minimum (left node))
-      (find-right-motion node)))
+      ;; the left node is the "smaller" tree; finding the maximum of
+      ;; the smaller tree is the next smallest element.
+      (find-maximum (left node))
 
-(defmethod find-successor ((node range-tree-node))
-  "Finds the one node that's bigger than `node`"
-  (if (right node)
-      (find-minimum (right node))
-      (find-left-motion node)))
+      ;; this is a mess and should be rewritten to not use
+      ;; return-from.
+      (let ((p (parent node)))
 
-;; TODO: find-*-motion could probably be a macro expanding both out.
-;; The find-*-motions attempt to find the next "leftmost" or
-;; "rightmost" node.
+        (when (left p)
+          (when (equalg (left p) node)
 
-(defun find-left-motion (node)
-  (if (parent node)
-      (if (equalg
-           (left (parent node))
-           node)
-          (parent node)
-          (find-left-motion (parent node)))
-      nil))
+            ;; we iterate up the parent pointers
+            (do ((temp (parent node)))
+                (())
+              (setf temp (parent temp))
+              (unless temp
+                (return-from find-next-smallest nil))
+              (when (funcall (comparator node) (key node) (key temp))
+                (return-from find-next-smallest temp)))))
 
-(defun find-right-motion (node)
-  (if (parent node)
-      (if (equalg
-           (right (parent node))
-           node)
-          (find-right-motion (parent node))
-          (parent node))
-      nil))
-
+        (when (right p)
+          (when (equalg (right p) node)
+            (return-from find-next-smallest p))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defclass index ()
@@ -1391,11 +1488,17 @@ nothing could be guessed."
     ((characterp value)
      #'char=)))
 
+
+(defclass rb-index (index)
+  ()
+  (:documentation "Uses the cl-containers red-black tree as the
+  indexing data structure."))
+
 (defun make-rb-index (table header)
   (let* ((comparator (comparator header))
            (new-index
              (make-instance
-              'index
+              'rb-index
               :target-column header
               :referent table
               :index (cl-containers:make-container
@@ -1409,6 +1512,25 @@ nothing could be guessed."
       (setf (index header) new-index)
       (build-index (index header))
       new-index))
+
+(defmethod lengthg ((index rb-index))
+  (cl-containers:size (index index)))
+
+(defmethod insert ((index rb-index) (item t) &key)
+  (cl-containers:insert-item (index index) item))
+
+(defclass range-tree-index (index)
+  ()
+  (:documentation "Uses a range tree as the index."))
+
+(defmethod lengthg ((index range-tree-index))
+  (lengthg
+   (index index)))
+
+(defun make-range-tree-index (table column)
+  (make-instance 'range-tree-index
+                 :referent table
+                 :target-column column))
 
 (defmethod build-index ((index index))
   "Creates an index over the oids of the table given, mapping oid to
@@ -1427,14 +1549,13 @@ content. Runs in O(n)."
                          :column
                          column)
                     (current-iterator table)))
-           (next table))
+           (next! table))
       (setf (built index) t))))
 
 
-;;; Top-level function; use to attach the index on the header.
-(defmethod attach-index ((table table) generalized-header &key
-                                                    (strict-comparator))
 
+(defmethod infer-operations ((table table) generalized-header &key strict-comparator)
+  "Infers the comparison and equality functions for the datatype stored in generalized-header"
   (let ((header (find-canonical-header table generalized-header)))
 
     (when (not (comparator header))
@@ -1451,11 +1572,18 @@ content. Runs in O(n)."
           (error "Header ~a must have an equality tester to attach an index" header)
           (unless (setf (equality header)
                         (guess-equality-function (ref table :cell
-                                                        `((:column ,(canonical-index header))
-                                                          (:row 0)))))
+                                                      `((:column ,(canonical-index header))
+                                                        (:row 0)))))
             (error "Unable to guess a comparator function"))))
+    header))
 
+;;; Top-level function; use to attach the index on the header.
+(defmethod attach-index ((table table) generalized-header &key
+                                                            strict-comparator)
+
+  (let ((header (infer-operations table generalized-header)))
     ;; Build the index with a r-b tree.
+    ;; TODO: this is only appropriate for oids. non-oids should not be rb.
     (make-rb-index table header)))
 
 (defmethod oid-of ((table table) generalized-header item)
@@ -1470,14 +1598,6 @@ lookup into the pages of the table"
                  (index (index header ))
                  :filter #'(lambda (x)
                              (funcall equal-foo item (car x)))))))
-
-(defmethod lengthg ((index index))
-  (cl-containers:size (index index)))
-
-(defmethod insert ((index index) (item t) &key)
-  (cl-containers:insert-item (index index) item))
-
-
 
 ;; select * from *foo* where *foo*."0" == 201
 ;; =>
