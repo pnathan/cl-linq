@@ -29,7 +29,7 @@ CL-USER> (cl-linq:query
 Bugs
 ---
 
-* grouo-by appears not to work
+* group-by appears not to work
 
 Maintainer:
 ---
